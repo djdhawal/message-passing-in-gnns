@@ -210,7 +210,7 @@ KEYS = {"graph_id", "u", "v", "resistance", "hops", "n_nodes", "jacobian"}
 
 def test_measure_jacobians_rows_on_paths():
     ds = [path_graph(n, gid=10 + i) for i, n in enumerate([3, 6, 9, 15, 20])]
-    cfg = MeasureConfig(n_graphs_jacobian=5, pairs_per_graph=8, seed=3)
+    cfg = MeasureConfig(n_graphs_jacobian=5, targets_per_graph=0, pairs_per_graph=8, seed=3)
     rows = measure_jacobians(PropModel(k=2), ds, cfg, CPU)
     assert rows and all(KEYS <= set(r) for r in rows)
     assert {r["graph_id"] for r in rows} == {11, 12, 13, 14}  # n=3 graph has LCC < 4
@@ -232,11 +232,37 @@ def test_measure_jacobians_rows_on_paths():
 def test_measure_jacobians_lcc_only():
     ei = torch.cat([path_edges(6), path_edges(3, offset=6)], dim=1)
     data = Data(x=torch.zeros(9, 1, dtype=torch.long), edge_index=ei, num_nodes=9)
-    cfg = MeasureConfig(n_graphs_jacobian=1, pairs_per_graph=50)
+    cfg = MeasureConfig(n_graphs_jacobian=1, targets_per_graph=0, pairs_per_graph=50)
     rows = measure_jacobians(PropModel(k=2), [data], cfg, CPU)
     assert len(rows) == 15  # all C(6, 2) pairs of the LCC
     assert all(r["u"] < 6 and r["v"] < 6 for r in rows)
     assert all(r["graph_id"] == 0 and r["n_nodes"] == 9 for r in rows)
+
+
+def test_measure_jacobians_shared_targets():
+    ds = [path_graph(n, gid=i) for i, n in enumerate([8, 20])]
+    cfg = MeasureConfig(n_graphs_jacobian=2, targets_per_graph=3, pairs_per_graph=5, seed=1)
+    rows = measure_jacobians(PropModel(k=2), ds, cfg, CPU)
+    for g in (0, 1):
+        g_rows = [r for r in rows if r["graph_id"] == g]
+        assert len(g_rows) == 15
+        assert len({r["v"] for r in g_rows}) == 3
+        for v in {r["v"] for r in g_rows}:
+            us = [r["u"] for r in g_rows if r["v"] == v]
+            assert len(us) == len(set(us)) == 5 and v not in us
+    for r in rows:
+        assert r["resistance"] == pytest.approx(r["hops"], abs=1e-8)
+        assert (r["jacobian"] == 0.0) == (r["hops"] > 2)
+
+
+def test_measure_jacobians_shared_targets_agree_with_pairs():
+    """A pair's norm must not depend on which other pairs share its target."""
+    data = path_graph(12, gid=0)
+    model = PropModel(k=3)
+    pairs = [(0, 5), (2, 5), (11, 5), (4, 9)]
+    joint = jacobian_norms(model, data, pairs, CPU)
+    single = np.array([jacobian_norms(model, data, [p], CPU)[0] for p in pairs])
+    np.testing.assert_allclose(joint, single, rtol=1e-6, atol=1e-12)
 
 
 # ---------------------------------------------------------------- run_all / summary

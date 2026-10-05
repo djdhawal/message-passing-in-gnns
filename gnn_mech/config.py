@@ -54,7 +54,12 @@ class MeasureConfig:
     enabled: bool = True
     split: str = "test"
     n_graphs_jacobian: int = 200
-    pairs_per_graph: int = 16
+    # Each target node costs one full Jacobian sweep, which yields its sensitivity to
+    # every source at once. targets_per_graph > 0 samples that many targets per graph
+    # and pairs_per_graph sources per target (stratified by resistance to the target);
+    # targets_per_graph = 0 samples pairs_per_graph independent pairs per graph.
+    targets_per_graph: int = 4
+    pairs_per_graph: int = 32
     n_graphs_entropy: int = 500
     seed: int = 0
 

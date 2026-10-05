@@ -148,8 +148,11 @@ def avg_effective_resistance(edge_index, num_nodes) -> float
 def jacobian_norms(model, data, pairs: list[tuple[int, int]], device) -> np.ndarray
     # ||d h_v / d h0_u||_F for each (u, v), vectorized over the hidden dim
 def measure_jacobians(model, dataset, cfg: MeasureConfig, device) -> list[dict]
-    # rows: {"graph_id", "u", "v", "resistance", "hops", "n_nodes", "jacobian"}
-    # pairs stratified across each graph's R quantiles, LCC only
+    # rows: {"graph_id", "u", "v", "resistance", "hops", "n_nodes", "lcc_size", "jacobian"}
+    # LCC only. With cfg.targets_per_graph > 0 (default 4), each sampled target v gets
+    # cfg.pairs_per_graph sources stratified by R(u, v): one Jacobian sweep of v gives
+    # every source at once, ~30x more pairs per second than independent pairs.
+    # targets_per_graph = 0 samples pairs_per_graph independent pairs stratified by R.
 
 # entropy.py
 def attention_entropy(weights, mask) -> np.ndarray     # per graph, layer, head

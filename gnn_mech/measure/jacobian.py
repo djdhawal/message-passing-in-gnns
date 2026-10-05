@@ -123,6 +123,27 @@ def sample_stratified_pairs(R: np.ndarray, n_pairs: int, rng: np.random.Generato
     return [(int(ju[k]), int(iu[k])) if f else (int(iu[k]), int(ju[k])) for k, f in zip(chosen, flip)]
 
 
+def sample_target_pairs(R: np.ndarray, n_targets: int, n_sources: int,
+                        rng: np.random.Generator) -> list[tuple[int, int]]:
+    """Pairs (u, v) sharing a few targets v, sources spread across R(., v) quantiles.
+
+    One Jacobian sweep of a target gives its sensitivity to every source, so
+    reusing targets yields n_targets * n_sources pairs for n_targets sweeps.
+    """
+    n = R.shape[0]
+    targets = rng.choice(n, min(n_targets, n), replace=False)
+    pairs: list[tuple[int, int]] = []
+    for v in targets:
+        others = np.array([u for u in range(n) if u != v])
+        if len(others) <= n_sources:
+            chosen = others
+        else:
+            order = others[np.argsort(R[others, v], kind="stable")]
+            chosen = np.array([rng.choice(s) for s in np.array_split(order, n_sources)])
+        pairs.extend((int(u), int(v)) for u in chosen)
+    return pairs
+
+
 def _graph_id(data, fallback: int) -> int:
     gid = getattr(data, "graph_id", None)
     if gid is None:
@@ -132,7 +153,9 @@ def _graph_id(data, fallback: int) -> int:
 
 def measure_jacobians(model, dataset, cfg: MeasureConfig, device, method: str = "auto",
                       min_lcc: int = 4) -> list[dict]:
-    """Jacobian norms for stratified node pairs on the LCC of sampled graphs.
+    """Jacobian norms for node pairs on the LCC of sampled graphs, stratified by resistance.
+
+    See MeasureConfig for how targets_per_graph / pairs_per_graph choose pairs.
 
     Rows: {"graph_id", "u", "v", "resistance", "hops", "n_nodes", "lcc_size", "jacobian"}.
     `u`, `v` are node ids in the full graph; `n_nodes` is the full graph size.
@@ -150,7 +173,10 @@ def measure_jacobians(model, dataset, cfg: MeasureConfig, device, method: str = 
             continue
         R = effective_resistance_matrix(ei, n, nodes=lcc)
         hops = hop_distance_matrix(ei, n, nodes=lcc)
-        local = sample_stratified_pairs(R, cfg.pairs_per_graph, rng)
+        if cfg.targets_per_graph > 0:
+            local = sample_target_pairs(R, cfg.targets_per_graph, cfg.pairs_per_graph, rng)
+        else:
+            local = sample_stratified_pairs(R, cfg.pairs_per_graph, rng)
         pairs = [(int(lcc[a]), int(lcc[b])) for a, b in local]
         J = jacobian_norms(model, data, pairs, device, method=method)
         gid = _graph_id(data, gi)
