@@ -1,0 +1,23 @@
+# Smoke test: tiny synthetic molecule-like graphs, no download, runs on CPU in
+# seconds. Exercises data -> model -> train -> resume -> measure end to end.
+exp_name: smoke
+out_dir: ./runs
+seed: 0
+data:
+  name: synthetic-tiny
+  pe_dim: 8
+model:
+  arch: hybrid
+  alpha: 0.5
+  hidden: 32
+  layers: 2
+  heads: 2
+train:
+  epochs: 3
+  batch_size: 32
+  warmup_epochs: 1
+  checkpoint_every: 1
+measure:
+  n_graphs_jacobian: 4
+  pairs_per_graph: 4
+  n_graphs_entropy: 8

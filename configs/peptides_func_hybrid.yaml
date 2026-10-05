@@ -1,0 +1,23 @@
+# Main Peptides-func hybrid (GINE + global attention) model. The blend weight
+# is swept from the command line, e.g. `model.alpha=0.25`; alpha=0 is a pure
+# GINE MPNN and alpha=1 pure attention. Each alpha gets its own config hash.
+exp_name: peptides_func_alpha
+out_dir: ./runs
+data:
+  name: Peptides-func
+  pe_dim: 20
+model:
+  arch: hybrid
+  alpha: 0.5
+  hidden: 96
+  layers: 5
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 200
+  batch_size: 128
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 5
+  grad_clip: 1.0
