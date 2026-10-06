@@ -1,0 +1,24 @@
+# Phase 1 step 7 GPU equivalence check. Mirrors the pilot LRGB notebook GPS
+# (96 hidden, 4 layers, 200 epochs, patience 40) with alpha=0.5.
+# Target: test AP >= 0.652 on seed 0. Also run with model.alpha=0 / model.alpha=1.
+exp_name: pilot_equivalence
+out_dir: ./runs
+data:
+  name: Peptides-func
+  pe_dim: 20
+model:
+  arch: hybrid
+  alpha: 0.5
+  hidden: 96
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 200
+  batch_size: 128
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 5
+  grad_clip: 1.0
+  patience: 40
