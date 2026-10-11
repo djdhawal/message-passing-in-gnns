@@ -290,8 +290,9 @@ def test_summary_recovers_power_law():
 def test_run_all_without_attention():
     ds = [path_graph(n, gid=i) for i, n in enumerate([5, 8, 12, 16])]
     out = run_all(PropModel(k=2), ds, MeasureConfig(n_graphs_jacobian=4, pairs_per_graph=6), CPU)
-    assert set(out) == {"jacobian", "entropy", "summary"}
+    assert set(out) == {"jacobian", "entropy", "range_node", "range_graph", "summary"}
     assert out["entropy"] == [] and out["summary"]["entropy"] == {"n_graphs": 0}
+    assert len(out["range_node"]) == len({(r["graph_id"], r["v"]) for r in out["jacobian"]})
     sj = out["summary"]["jacobian"]
     assert {"n_pairs", "n_zero", "vs_resistance", "vs_hops", "size_controlled"} <= set(sj)
     assert {"slope", "intercept", "r", "p", "n"} <= set(sj["vs_resistance"])
@@ -353,3 +354,190 @@ def test_integration_entropy_hybrid():
     assert all(0.0 <= r["entropy_norm"] <= 1.0 + 1e-6 for r in rows)
     out = run_all(model, ds, MeasureConfig(n_graphs_jacobian=4, pairs_per_graph=4, n_graphs_entropy=4), CPU)
     assert out["summary"]["entropy"]["n_graphs"] == 4
+
+
+# ---------------------------------------------------------------- range measure
+
+from gnn_mech.measure import (hessian_influence, jacobian_sweeps, measure_graph_range,  # noqa: E402
+                              node_range_rows, summarize_range)
+from gnn_mech.measure.range import normalized_range  # noqa: E402
+
+
+def _hop_matrix(n: int, edge_index: torch.Tensor) -> torch.Tensor:
+    from gnn_mech.measure.resistance import hop_distance_matrix
+    return torch.as_tensor(hop_distance_matrix(edge_index, n, np.arange(n)), dtype=torch.float32)
+
+
+class SelfModel(PropModel):
+    """h_v = tanh(h0_v W): every node reads only itself."""
+
+    def node_embeddings_from_h0(self, h0, batch):
+        return torch.tanh(h0 @ self.ws[0])
+
+
+class ExactHopModel(PropModel):
+    """h_v = sum over nodes u at exactly `d` hops of h0_u W (no self term)."""
+
+    def __init__(self, d: int):
+        super().__init__(k=1, nonlinear=False)
+        self.d = d
+
+    def node_embeddings_from_h0(self, h0, batch):
+        a = (_hop_matrix(h0.shape[0], batch.edge_index) == self.d).to(h0.dtype)
+        return (a @ h0) @ self.ws[0]
+
+
+def _sweep_ranges(model, ds, cfg) -> dict:
+    _, targets = jacobian_sweeps(model, ds, cfg, CPU)
+    return {(r["graph_id"], r["v"]): r for r in node_range_rows(targets)}
+
+
+def test_normalized_range_basic():
+    assert normalized_range([1, 1, 0], [0, 2, 5]) == pytest.approx(1.0)
+    assert normalized_range([0, 0], [1, 2]) is None
+    assert normalized_range([1, 1], [1, np.inf]) == pytest.approx(1.0)   # unreachable ignored
+
+
+def test_range_self_only_is_zero():
+    ds = [path_graph(n, gid=i) for i, n in enumerate([6, 10])]
+    cfg = MeasureConfig(n_graphs_jacobian=2, targets_per_graph=3, pairs_per_graph=4)
+    rows = _sweep_ranges(SelfModel(k=1), ds, cfg)
+    assert len(rows) == 6
+    for r in rows.values():
+        for k in ("range_hops", "range_res", "range_hops_fro", "range_res_fro"):
+            assert r[k] == pytest.approx(0.0, abs=1e-12)
+        assert r["total_influence"] > 0
+
+
+@pytest.mark.parametrize("d", [1, 2, 3])
+def test_range_exact_hop_neighbour(d):
+    torch.manual_seed(d)
+    ds = [path_graph(12, gid=0)]
+    cfg = MeasureConfig(n_graphs_jacobian=1, targets_per_graph=12, pairs_per_graph=4)
+    rows = _sweep_ranges(ExactHopModel(d), ds, cfg)
+    assert len(rows) == 12
+    for r in rows.values():
+        assert r["range_hops"] == pytest.approx(d)
+        assert r["range_res"] == pytest.approx(d)       # tree: R = hops
+        assert r["range_hops_fro"] == pytest.approx(d)
+
+
+def test_range_linear_propagation_closed_form():
+    torch.manual_seed(4)
+    k, n = 3, 9
+    model = PropModel(k=k, dim=5, nonlinear=False)
+    data = path_graph(n, gid=0)
+    A = torch.zeros(n, n)
+    A[data.edge_index[1], data.edge_index[0]] = 1.0
+    P = torch.linalg.matrix_power(A + torch.eye(n), k).double().numpy()
+    D = np.abs(np.arange(n)[:, None] - np.arange(n)[None, :]).astype(float)
+    expected = (P * D).sum(1) / P.sum(1)   # J_vu = P_vu W, so the W factor cancels
+    cfg = MeasureConfig(n_graphs_jacobian=1, targets_per_graph=n, pairs_per_graph=3)
+    rows = _sweep_ranges(model, [data], cfg)
+    for v in range(n):
+        assert rows[(0, v)]["range_hops"] == pytest.approx(expected[v], rel=1e-5)
+        assert rows[(0, v)]["range_hops_fro"] == pytest.approx(expected[v], rel=1e-5)
+
+
+def test_range_invariant_to_sampled_sources():
+    ds = [path_graph(n, gid=i) for i, n in enumerate([7, 11, 15])]
+    model = PropModel(k=2)
+    a = _sweep_ranges(model, ds, MeasureConfig(n_graphs_jacobian=3, targets_per_graph=4, pairs_per_graph=2))
+    b = _sweep_ranges(model, ds, MeasureConfig(n_graphs_jacobian=3, targets_per_graph=4, pairs_per_graph=9))
+    shared = set(a) & set(b)
+    assert shared
+    for key in shared:
+        for f in ("range_hops", "range_res", "total_influence"):
+            assert a[key][f] == pytest.approx(b[key][f], rel=1e-9)
+
+
+def test_jacobian_sweeps_rows_match_measure_jacobians():
+    ds = [path_graph(n, gid=i) for i, n in enumerate([8, 13])]
+    cfg = MeasureConfig(n_graphs_jacobian=2, targets_per_graph=2, pairs_per_graph=5, seed=2)
+    model = PropModel(k=2)
+    rows, targets = jacobian_sweeps(model, ds, cfg, CPU)
+    assert len(rows) == 20 and rows == measure_jacobians(model, ds, cfg, CPU)
+    by_key = {(t["graph_id"], t["v"]): t for t in targets}
+    for r in rows:
+        t = by_key[(r["graph_id"], r["v"])]
+        assert t["fro"][r["u"]] == pytest.approx(r["jacobian"])    # path graphs: LCC = all nodes
+
+
+class QuadModel(PropModel):
+    """Graph output y_k = sum_{(u, w): hops(u, w) == d} <h0_u W_k, h0_w>: Hessian lives at distance d."""
+
+    def __init__(self, d: int, out_dim: int = 2, dim: int = 4):
+        super().__init__(k=1, dim=dim)
+        self.d = d
+        self.wk = nn.Parameter(torch.randn(out_dim, dim, dim))
+
+    def forward_from_h0(self, h0, batch):
+        a = (_hop_matrix(h0.shape[0], batch.edge_index) == self.d).to(h0.dtype)
+        return torch.einsum("uw,ui,kij,wj->k", a, h0, self.wk, h0)[None]
+
+
+class LinearGraphModel(PropModel):
+    def forward_from_h0(self, h0, batch):
+        return (h0 @ self.ws[0]).mean(0, keepdim=True)
+
+
+def test_hessian_range_exact_distance():
+    torch.manual_seed(0)
+    model = QuadModel(d=2)
+    data = path_graph(9, gid=5)
+    infl = hessian_influence(model, data, [0, 4, 8], CPU, method="batched")
+    loop = hessian_influence(model, data, [0, 4, 8], CPU, method="loop")
+    for u in (0, 4, 8):
+        np.testing.assert_allclose(infl[u], loop[u], rtol=1e-5, atol=1e-7)
+        assert set(np.flatnonzero(infl[u] > 1e-9)) == {w for w in range(9) if abs(w - u) == 2}
+    rows = measure_graph_range(model, [data], MeasureConfig(n_graphs_range=1, sources_per_graph=4), CPU)
+    assert len(rows) == 4 and all(r["graph_id"] == 5 for r in rows)
+    for r in rows:
+        assert r["range_hops"] == pytest.approx(2.0) and r["range_res"] == pytest.approx(2.0)
+
+
+def test_hessian_range_zero_for_linear_model():
+    rows = measure_graph_range(LinearGraphModel(k=1), [path_graph(8)],
+                               MeasureConfig(n_graphs_range=1, sources_per_graph=3), CPU)
+    assert len(rows) == 3
+    assert all(r["range_hops"] is None and r["total_hessian"] == 0.0 for r in rows)
+    s = summarize_range(rows, ("range_hops",))
+    assert s["range_hops"]["n_undefined"] == 3
+    assert measure_graph_range(LinearGraphModel(k=1), [path_graph(8)], MeasureConfig(n_graphs_range=0), CPU) == []
+
+
+def test_summarize_range():
+    rows = [{"graph_id": g, "n_nodes": n, "range_hops": float(n) / 10 + 0.01 * i}
+            for g, n in enumerate([10, 20, 30, 40]) for i in range(3)]
+    s = summarize_range(rows, ("range_hops",))
+    assert s["n"] == 12 and s["n_graphs"] == 4
+    rh = s["range_hops"]
+    assert rh["rows"]["n"] == 12 and rh["graph_means"]["n"] == 4
+    assert rh["size_corr"]["r"] == pytest.approx(1.0)
+    assert rh["rows"]["median"] == pytest.approx(np.median([r["range_hops"] for r in rows]))
+    assert summarize_range([], ("range_hops",)) == {"n": 0}
+
+
+def test_integration_range_mpnn_bounded_by_depth():
+    L = 3
+    model = _real_model(0.0, L)
+    ds = [real_path_graph(n, gid=i) for i, n in enumerate([10, 14])]
+    cfg = MeasureConfig(n_graphs_jacobian=2, targets_per_graph=4, pairs_per_graph=4,
+                        n_graphs_range=1, sources_per_graph=2)
+    out = run_all(model, ds, cfg, CPU)
+    assert len(out["range_node"]) == 8
+    for r in out["range_node"]:
+        assert 0.0 < r["range_hops"] <= L + 1e-9
+    assert out["summary"]["range_node"]["range_hops"]["rows"]["max"] <= L + 1e-9
+
+
+def test_integration_hessian_range_attention():
+    model = _real_model(0.5, 2)
+    data = real_path_graph(8)
+    fast = hessian_influence(model, data, [1, 6], CPU, method="batched")
+    slow = hessian_influence(model, data, [1, 6], CPU, method="loop")
+    for u in (1, 6):
+        np.testing.assert_allclose(fast[u], slow[u], rtol=1e-4, atol=1e-7)
+        assert fast[u].sum() > 0
+    rows = measure_graph_range(model, [data], MeasureConfig(n_graphs_range=1, sources_per_graph=2), CPU)
+    assert all(r["range_hops"] is not None and 0 <= r["range_hops"] <= 7 for r in rows)

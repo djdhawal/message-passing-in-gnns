@@ -3,8 +3,8 @@
 Both expose the same API so training and measurement code is model-agnostic:
 `embed_inputs` (batch -> h0), `node_embeddings_from_h0` (a pure function of h0
 given the batch structure, so Jacobians w.r.t. h0 are meaningful),
-`node_embeddings`, `forward` (graph logits), `attention_layers` and
-`set_attention_cache`.
+`node_embeddings`, `forward_from_h0` / `forward` (graph logits),
+`attention_layers` and `set_attention_cache`.
 """
 from __future__ import annotations
 
@@ -70,9 +70,13 @@ class _GraphModel(nn.Module):
     def node_embeddings(self, batch) -> Tensor:
         return self.node_embeddings_from_h0(self.embed_inputs(batch), batch)
 
-    def forward(self, batch) -> Tensor:
-        h = self.node_embeddings(batch)
+    def forward_from_h0(self, h0: Tensor, batch) -> Tensor:
+        """Graph logits [B, out_dim] as a function of h0 (graph-level range Hessians)."""
+        h = self.node_embeddings_from_h0(h0, batch)
         return self.head(self.pool(h, _batch_vector(batch)))
+
+    def forward(self, batch) -> Tensor:
+        return self.forward_from_h0(self.embed_inputs(batch), batch)
 
     def attention_layers(self) -> list[GlobalAttn]:
         return [m for m in self.modules() if isinstance(m, GlobalAttn)]

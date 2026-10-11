@@ -1,4 +1,4 @@
-"""Mechanistic measurements: Jacobian sensitivity and attention entropy."""
+"""Mechanistic measurements: Jacobian sensitivity, attention entropy and range."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -8,11 +8,14 @@ from scipy.stats import linregress, pearsonr
 
 from ..config import MeasureConfig
 from .entropy import attention_entropy, measure_entropy
-from .jacobian import jacobian_norms, measure_jacobians, sample_stratified_pairs
+from .jacobian import jacobian_norms, jacobian_sweeps, measure_jacobians, sample_stratified_pairs, target_influence
+from .range import (GRAPH_RANGE_KEYS, NODE_RANGE_KEYS, hessian_influence, measure_graph_range, node_range_rows,
+                    summarize_range)
 
 __all__ = [
-    "attention_entropy", "measure_entropy", "jacobian_norms", "measure_jacobians",
-    "sample_stratified_pairs", "summarize_jacobian", "summarize_entropy", "run_all",
+    "attention_entropy", "measure_entropy", "jacobian_norms", "jacobian_sweeps", "measure_jacobians",
+    "target_influence", "sample_stratified_pairs", "hessian_influence", "measure_graph_range",
+    "node_range_rows", "summarize_jacobian", "summarize_entropy", "summarize_range", "run_all",
 ]
 
 
@@ -106,8 +109,18 @@ def summarize_entropy(rows: list[dict]) -> dict:
 
 
 def run_all(model, dataset, cfg: MeasureConfig, device) -> dict:
-    """Run every measurement; returns {"jacobian": rows, "entropy": rows, "summary": {...}}."""
-    jac = measure_jacobians(model, dataset, cfg, device)
+    """Run every measurement.
+
+    Returns {"jacobian": rows, "entropy": rows, "range_node": rows, "range_graph": rows,
+    "summary": {"jacobian", "entropy", "range_node", "range_graph"}}. Node-level range
+    rows (one per Jacobian target) reuse the Jacobian sweeps; graph-level (Hessian)
+    range rows come from `cfg.n_graphs_range` x `cfg.sources_per_graph` sources.
+    """
+    jac, targets = jacobian_sweeps(model, dataset, cfg, device)
+    rng_node = node_range_rows(targets)
     ent = measure_entropy(model, dataset, cfg, device)
-    return {"jacobian": jac, "entropy": ent,
-            "summary": {"jacobian": summarize_jacobian(jac), "entropy": summarize_entropy(ent)}}
+    rng_graph = measure_graph_range(model, dataset, cfg, device)
+    return {"jacobian": jac, "entropy": ent, "range_node": rng_node, "range_graph": rng_graph,
+            "summary": {"jacobian": summarize_jacobian(jac), "entropy": summarize_entropy(ent),
+                        "range_node": summarize_range(rng_node, NODE_RANGE_KEYS),
+                        "range_graph": summarize_range(rng_graph, GRAPH_RANGE_KEYS)}}

@@ -258,6 +258,13 @@ def test_gcn_tonshoff_options():
         model(arch="gcn", act="tanh")
 
 
+def test_forward_from_h0_matches_forward():
+    b = mixed_batch()
+    for m in (model(0.5).eval(), model(arch="gcn").eval()):
+        with torch.no_grad():
+            assert torch.allclose(m(b), m.forward_from_h0(m.embed_inputs(b), b))
+
+
 def test_config_hash_stable_for_new_fields():
     """Fields added in Phase 2 do not change the hash of Phase 1 configs at their defaults."""
     from pathlib import Path

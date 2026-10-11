@@ -21,3 +21,5 @@ measure:
   n_graphs_jacobian: 4
   pairs_per_graph: 4
   n_graphs_entropy: 8
+  n_graphs_range: 4
+  sources_per_graph: 2
