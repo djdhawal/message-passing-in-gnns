@@ -354,6 +354,33 @@ def test_run_skip_force_measure(tmp_path, monkeypatch):
     assert calls == {"train": 2, "measure": 2}
     assert [h["epoch"] for h in json.loads((Path(m["run_dir"]) / "history.json").read_text())] == [1, 2]
 
+    # predictions: written for val and test, regenerated when missing, deleted by --force
+    path = Path(m["run_dir"])
+    for split, n in (("val", 8), ("test", 8)):
+        with np.load(path / f"preds_{split}.npz") as z:
+            assert z["graph_id"].tolist() == list(range(n))
+            assert z["y"].shape == z["logits"].shape == (n, OUT_DIM)
+    (path / "preds_test.npz").unlink()
+    run_mod.run(cfg)                           # preds missing: regenerate without training/measuring
+    assert calls == {"train": 2, "measure": 2} and (path / "preds_test.npz").exists()
+    assert "preds_val.npz" in run_mod._RUN_FILES and "preds_test.npz" in run_mod._RUN_FILES
+    (path / "preds_val.npz").write_bytes(b"stale")
+    run_mod.run(cfg, force=True)               # --force deletes and rewrites the prediction files
+    with np.load(path / "preds_val.npz") as z:
+        assert z["logits"].shape == (8, OUT_DIM)
+
+
+def test_predict_matches_evaluate():
+    ds = make_ds(20, 3)
+    model = TinyModel().eval()
+    out = train_mod.predict(model, ds, batch_size=6, device=torch.device("cpu"))
+    assert out["graph_id"].tolist() == list(range(20))
+    ev = evaluate(model, DataLoader(ds, batch_size=6), Info([5], [1], OUT_DIM, 0, "multilabel"), torch.device("cpu"))
+    assert macro_ap(out["y"], 1 / (1 + np.exp(-out["logits"]))) == pytest.approx(ev["ap"])
+    for d in ds:
+        del d.graph_id
+    assert train_mod.predict(model, ds, 7, torch.device("cpu"))["graph_id"].tolist() == list(range(20))
+
 
 def _deps_available() -> bool:
     try:
@@ -375,9 +402,14 @@ def test_end_to_end_smoke(tmp_path, monkeypatch):
             f"data.root={tmp_path / 'data'}", "train.device=cpu"]
     metrics = run_mod.main(argv)
     path = Path(metrics["run_dir"])
-    for name in ("config.json", "history.json", "metrics.json", "best.pt", "checkpoint.pt", "measurements.json"):
+    for name in ("config.json", "history.json", "metrics.json", "best.pt", "checkpoint.pt", "measurements.json",
+                 "preds_val.npz", "preds_test.npz"):
         assert (path / name).exists(), name
     assert metrics["epochs_run"] == 3
     meas = json.loads((path / "measurements.json").read_text())
-    assert {"jacobian", "entropy", "summary"} <= set(meas)
+    assert {"jacobian", "entropy", "range_node", "range_graph", "summary"} <= set(meas)
+    assert meas["range_node"] and {"range_hops", "range_res"} <= set(meas["range_node"][0])
+    with np.load(path / "preds_test.npz") as z:
+        assert z["logits"].shape == (32, 10)
+        assert macro_ap(z["y"], 1 / (1 + np.exp(-z["logits"]))) == pytest.approx(metrics["test"]["ap"], abs=1e-6)
     assert run_mod.main(argv)["seconds"] == metrics["seconds"]   # second call is skipped
