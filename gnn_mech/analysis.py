@@ -464,8 +464,9 @@ def range_analysis(runs: pd.DataFrame) -> dict:
     mean / median over targets (pooled seeds), the seed CI of per-seed means, the
     correlation of per-graph mean range with graph size and, for the Hessian, the number
     of sources with an all-zero Hessian (range undefined). `reading` states the
-    task-range interpretation: if every model's mean hop range stays well below its
-    depth, that supports Bamberger et al.'s finding that Peptides tasks are short-range.
+    task-range interpretation, using a stated rule of thumb: if every model's mean hop
+    range is at most half its depth, that supports Bamberger et al.'s finding that
+    Peptides tasks are short-range.
     """
     out: dict = {"node": pd.DataFrame(), "graph": pd.DataFrame(), "reading": ""}
     layers = runs.groupby("model")["layers"].first().to_dict() if not runs.empty else {}
@@ -494,9 +495,13 @@ def range_analysis(runs: pd.DataFrame) -> dict:
     if not node.empty:
         parts = [f"{r.model}: {r.range_hops_mean:.2f} hops" + (f" (depth {r.layers})" if r.layers else "")
                  for r in node.itertuples()]
-        out["reading"] = ("Mean node-level range (L1-normalized, hops): " + "; ".join(parts) + ". "
-                          "Ranges well below model depth for every well-trained model support "
-                          "Bamberger et al.'s reading that Peptides-func is short-range.")
+        short = [r.layers is not None and r.range_hops_mean <= r.layers / 2 for r in node.itertuples()]
+        verdict = ("Every model's mean range is at most half its depth, consistent with Bamberger et al.'s "
+                   "finding that Peptides-func is short-range." if all(short) else
+                   "Not every model stays within half its depth ("
+                   + ", ".join(r.model for r, ok in zip(node.itertuples(), short) if not ok)
+                   + "), so the short-range reading is not supported by all models.")
+        out["reading"] = "Mean node-level range (L1-normalized, hops): " + "; ".join(parts) + ". " + verdict
     return out
 
 
