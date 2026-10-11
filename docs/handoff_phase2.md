@@ -85,3 +85,37 @@ For the orchestrator agent picking up Phase 2. Read this, then
   (plus a `Claude-Session:` line with your own session URL if your environment gives one).
 - The user follows along in a Claude app; keep reports short and say plainly
   what passed, what didn't, and what they need to run on Colab.
+
+## Phase 2 status (code built; runs pending)
+
+All Phase 2 *code* is in place on this branch; nothing has been trained on real data yet.
+Details, contract additions and the decisions taken where the plan left a choice are in
+`docs/phase2_plan.md` § Contract additions and § Status.
+
+| New / changed | What it does |
+|---|---|
+| `gnn_mech/measure/range.py`, `jacobian.py` | Bamberger et al. range: node level from the existing Jacobian sweeps (`range_node` rows), graph level from batched Hessian-vector products (`range_graph` rows) |
+| `gnn_mech/run.py`, `train.predict` | `preds_val.npz` / `preds_test.npz` per run (graph_id, y, logits) |
+| `gnn_mech/sweep.py`, `configs/sweeps/` | `python -m gnn_mech.sweep configs/sweeps/phase2.yaml [--dry-run]`, skip/resume |
+| `configs/peptides_func_gcn.yaml`, `ModelConfig.act/norm/head_layers` | GCN aligned with Tönshoff et al.'s tuned config (GELU, no norm, 3-layer head, hidden 235, batch 200; 491,865 params) |
+| `gnn_mech/analysis.py`, `notebooks/phase2_analysis.ipynb` | Tables, seeded bootstrap CIs, G1/G2 inputs, figures (PDF + PNG) |
+| `gnn_mech/reddit/` | SNAP graph, target selection, matched SAGE / VMN, distance and random splits, per-band metrics |
+| `notebooks/colab_driver.ipynb` §9-10 | Phase 2 sweep, analysis and Reddit cells |
+
+Things learned while building it:
+
+1. **arXiv and SNAP are blocked from this sandbox** (proxy 403); github.com and PyPI work,
+   download.pytorch.org does not (install `torch` from PyPI). The range definitions were taken
+   from the authors' repository `BenGutteridge/range-measure`.
+2. **Fused attention has no double backward.** Hessians through `nn.MultiheadAttention` need
+   `sdpa_kernel(SDPBackend.MATH)`; `range.py` does this.
+3. **Graph-level Hessian range is undefined for ReLU-only models** (α=0): the Hessian is zero
+   almost everywhere. It is reported as None and counted, not dropped silently.
+4. **Hessian cost** (about 50 s per Peptides-size graph on CPU, see `docs/phase2_plan.md` § Status); keep
+   `n_graphs_range` / `sources_per_graph` modest, or set `measure.n_graphs_range=0` to skip.
+5. Config hashes of Phase 1 configs are unchanged (pinned in `tests/test_models.py`), so G0
+   run folders are reused.
+
+Next steps for the user (Colab): G0 if not done; Colab driver §9 (sweep, then analysis);
+§10 (Reddit target selection and experiments). Then the orchestrator checks G1/G2 and writes
+`docs/results/phase2.md`.

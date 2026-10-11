@@ -16,7 +16,7 @@ one axis, task range / dilution exposure on the other, coloured by the best α.
 |---|---|---|---|
 | 0 | Thesis text fixes needing no new runs | n/a | Deferred by the author: results will change anyway; folded into Track C of each phase |
 | 1 | Shared training + measurement package (`gnn_mech/`), pilot bug fixes | GPU check: 4-layer α=0.5 ≥ 0.652 test AP; α=0 and α=1 train | Code done (83 tests pass). **GPU check pending on Colab** |
-| 2 | Re-baseline Peptides-func (α=0/0.5/1 + GCN, 3 seeds), range measure, Reddit fixes | G1: α=0.5 ≥ 0.63, α=1 ≥ 0.60, GCN ≥ 0.66 (or gap documented); G2: Jacobian slope difference vs transformer reported with CI | Planned: `docs/phase2_plan.md` |
+| 2 | Re-baseline Peptides-func (α=0/0.5/1 + GCN, 3 seeds), range measure, Reddit fixes | G1: α=0.5 ≥ 0.63, α=1 ≥ 0.60, GCN ≥ 0.66 (or gap documented); G2: Jacobian slope difference vs transformer reported with CI | Code done (range measure, predictions, sweep, analysis, GCN alignment, Reddit track; CPU tests pass). **GPU sweep and real-data Reddit runs pending on Colab**; see `docs/phase2_plan.md` § Status |
 | 3 | α sweep on Peptides-func (0, .25, .5, .75, 1 × 3 seeds); best α per resistance bin; Jacobian slope and entropy vs α; gated-attention baseline | Performance-vs-α curve with CIs | Not started |
 | 4 | Task-range axis: range on Peptides-func vs Peptides-struct (same graphs, different task) | Range differs or is shown equal, with CIs | Range *measure* moved into Phase 2 |
 | 5 | Synthetic suite: controlled effective resistance and long-range dependence, distractor injection; α sweep over the grid → phase diagram; optional known long-range real dataset | Phase diagram with clear regions | Not started |

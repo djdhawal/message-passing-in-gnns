@@ -173,6 +173,104 @@ Then you run on Colab:
 
 I then run the analysis, check G1 and G2, and write `docs/results/phase2.md` with the thesis text drafts.
 
+## Contract additions (Phase 2)
+
+Written into the code; `docs/phase1_plan.md` signatures are unchanged.
+
+```python
+# config.py
+ModelConfig.act: str = "relu"          # GCN baseline nonlinearity: "relu" | "gelu"
+ModelConfig.norm: str = "batch"        # GCN per-layer norm: "batch" | "none"
+ModelConfig.head_layers: int = 2       # Linear layers in the graph MLP head (both models)
+MeasureConfig.n_graphs_range: int = 30 # graph-level (Hessian) range: graphs ...
+MeasureConfig.sources_per_graph: int = 4  # ... sampled source nodes per graph ...
+MeasureConfig.hessian_channels: int = 16  # ... and sampled source-side h0 channels (0 = all)
+# Fields added after Phase 1 enter Config.hash() only when they differ from their
+# default, so Phase 1 run folders (G0) keep their hash.
+
+# models.py: both models
+def forward_from_h0(self, h0, batch) -> Tensor   # graph logits from h0; forward() uses it
+
+# measure/jacobian.py
+def target_influence(model, data, targets, device, method="auto") -> dict[int, tuple[ndarray, ndarray]]
+    # {v: (fro [N], l1 [N])} per-source sensitivity over all nodes from one sweep per target
+def jacobian_sweeps(model, dataset, cfg, device, method="auto", min_lcc=4) -> tuple[list[dict], list[dict]]
+    # (pair rows as measure_jacobians, per-target records with LCC vectors fro, l1, hops, resistance)
+
+# measure/range.py
+def node_range_rows(targets) -> list[dict]
+    # {"graph_id", "v", "n_nodes", "lcc_size", "range_hops", "range_res",
+    #  "range_hops_fro", "range_res_fro", "total_influence"}
+def hessian_influence(model, data, sources, device, method="auto") -> dict[int, ndarray]
+def measure_graph_range(model, dataset, cfg, device) -> list[dict]
+    # {"graph_id", "u", "n_nodes", "lcc_size", "range_hops", "range_res", "total_hessian"};
+    # range is None when the Hessian row is all zero
+def summarize_range(rows, keys) -> dict
+
+# measure/__init__.py
+run_all(...) -> {"jacobian", "entropy", "range_node", "range_graph", "summary"}
+
+# train.py
+def predict(model, dataset, batch_size, device) -> {"graph_id", "y", "logits"}   # numpy, dataset order
+
+# run.py: after best.pt reload, writes preds_val.npz / preds_test.npz (graph_id, y, logits)
+```
+
+## Status (Phase 2 code, built 2026-10-11)
+
+| Item | State | Where |
+|---|---|---|
+| A1 range measure | Done; node level from existing sweeps (no extra backward passes), graph level via batched HVPs | `gnn_mech/measure/range.py`, `jacobian.py` |
+| A2 predictions | Done | `gnn_mech/run.py`, `train.predict` |
+| A3 sweep runner | Done, with `--dry-run` | `gnn_mech/sweep.py`, `configs/sweeps/{phase2,smoke}.yaml` |
+| A4 GCN alignment | Done (see config header for the remaining RWSE-encoder difference) | `configs/peptides_func_gcn.yaml` |
+| A5 analysis | Done; notebook executed on CPU smoke runs | `gnn_mech/analysis.py`, `notebooks/phase2_analysis.ipynb` |
+| A6 gates G1/G2 | **Waiting for the GPU sweep** (and G0) | Colab driver section 9 |
+| B1-B5 Reddit | Code and tests done on a synthetic graph; **not yet run on the real graph** | `gnn_mech/reddit/`, Colab driver section 10 |
+| C results doc | Waiting for results | `docs/results/phase2.md` |
+
+Decisions taken where the plan left a choice:
+- **Range definition.** arXiv was blocked from the build sandbox, so the definitions were
+  transcribed from the authors' code (`BenGutteridge/range-measure`), recorded in the
+  `range.py` docstring. Influence is the entrywise **L1** norm of the Jacobian/Hessian
+  block (not Frobenius); `range_hops` / `range_res` follow that, and `*_fro` variants use
+  the Frobenius norm of the Jacobian pair rows, as written in A1.2. Sums run over the LCC
+  and include the target itself (distance 0), as in the paper, so a self-only model has range 0.
+- **Which variant is "paper-faithful" for Peptides.** The paper's LRGB (Peptides) numbers use
+  the node-level Jacobian of the last pre-pooling layer; Hessians are used for its synthetic
+  graph-level tasks. Both are implemented. The Hessian is zero almost everywhere for ReLU-only
+  models (alpha = 0); its range is then reported as undefined. The Tönshoff-aligned GCN uses
+  GELU, so its Hessian is nonzero, but through the mean-pool + nonlinear head it couples all
+  node pairs and can exceed the receptive field (about 20 hops for an untrained GCN on a
+  150-node path), so use the node-level range to compare models.
+- **Hessian cost.** On CPU a 150-node Peptides-size graph takes about 50 s (attention models)
+  for the default 4 sources x 16 sampled channels x 10 outputs = 640 double-backward rows
+  (batched; the per-row loop is about 2x slower). Hence `hessian_channels = 16` (the paper
+  also samples channels) and `n_graphs_range = 30`. GPU time is not measured yet; if the
+  measurement step runs long on Colab, lower `measure.n_graphs_range`, or set it to 0 to skip.
+  The node-level range costs nothing extra (about 1-2 s per graph on CPU with the Jacobian sweeps).
+- **Hessian through attention** runs with the math SDPA backend: the fused attention kernels
+  have no double backward.
+- **GCN alignment** also needed new model options (GELU, no norm, 3-layer head) rather than
+  only config values; added as `ModelConfig` fields whose defaults keep the Phase 1 model.
+- **Sweep failure policy:** a failing run is logged and the sweep continues (exit status 1);
+  `KeyboardInterrupt` / a Colab disconnect still stops it, and a rerun resumes.
+- **Reddit inputs** drop the same |r| > 0.9 near-duplicates of the target that target
+  selection drops; skewed non-negative targets are modelled as log1p; band metrics use the
+  modelled units (the ratio to the constant predictor is unit-free). Propagated features for
+  target selection average only over neighbours that have features (non-source nodes have none).
+- **Reddit random split** has the same split sizes as the distance split, drawn from the same
+  pool (reachable source nodes), reseeded per seed.
+
+What remains (needs Colab GPU or the real data):
+1. G0, then `python -m gnn_mech.sweep configs/sweeps/phase2.yaml` (section 9 of the Colab driver).
+2. Range sanity on real Peptides: alpha = 0 mean node-level range <= 5 hops (guaranteed by the
+   receptive field; tested on synthetic graphs), alpha = 1 reported.
+3. Reddit on the real graph: check the SNAP download from Colab (blocked here), run target
+   selection, and confirm one seed of the old target's distance split reproduces the pilot's
+   per-band ordering before switching targets (`--target 0 --seeds 0:1 --splits distance`).
+4. Analysis, G1/G2, and `docs/results/phase2.md` with the thesis text drafts.
+
 ## Verification
 
 - `pytest -q`: all existing 83 tests plus the new range, prediction-saving, sweep, analysis and Reddit tests pass on CPU.
