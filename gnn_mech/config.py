@@ -70,8 +70,9 @@ class MeasureConfig:
     # with sources_per_graph sampled source nodes (one batch of Hessian-vector products
     # per source). 0 graphs disables it. The node-level range needs no setting: it is
     # computed from the Jacobian sweeps of the targets above.
-    n_graphs_range: int = 50
+    n_graphs_range: int = 30
     sources_per_graph: int = 4
+    hessian_channels: int = 16        # source-side h0 channels sampled per graph (0 = all D0)
     seed: int = 0
 
 
@@ -117,7 +118,7 @@ _SECTIONS = {"data": DataConfig, "model": ModelConfig, "train": TrainConfig, "me
 # Fields added after Phase 1 runs were written; omitted from Config.hash() at their default.
 _ADDED_FIELDS = {
     "model": ("act", "norm", "head_layers"),
-    "measure": ("n_graphs_range", "sources_per_graph"),
+    "measure": ("n_graphs_range", "sources_per_graph", "hessian_channels"),
 }
 
 

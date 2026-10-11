@@ -541,3 +541,16 @@ def test_integration_hessian_range_attention():
         assert fast[u].sum() > 0
     rows = measure_graph_range(model, [data], MeasureConfig(n_graphs_range=1, sources_per_graph=2), CPU)
     assert all(r["range_hops"] is not None and 0 <= r["range_hops"] <= 7 for r in rows)
+
+
+def test_hessian_channel_sampling():
+    torch.manual_seed(0)
+    model = QuadModel(d=2, dim=6)
+    data = path_graph(9)
+    full = hessian_influence(model, data, [4], CPU)
+    sub = hessian_influence(model, data, [4], CPU, n_channels=2, rng=np.random.default_rng(0))
+    assert set(np.flatnonzero(sub[4] > 1e-9)) == set(np.flatnonzero(full[4] > 1e-9)) == {2, 6}
+    assert sub[4].sum() < full[4].sum()
+    rows = measure_graph_range(model, [data], MeasureConfig(n_graphs_range=1, sources_per_graph=3,
+                                                           hessian_channels=3), CPU)
+    assert all(r["range_hops"] == pytest.approx(2.0) for r in rows)

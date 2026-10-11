@@ -33,11 +33,15 @@ are implemented here:
 * Graph-level (`measure_graph_range`): rho^norm of sampled source nodes u from the
   Hessian of the pooled logits w.r.t. h0, via batched Hessian-vector products (one
   batch per chunk of sources gives that source's mixed partials against every w).
-  Caveat: for piecewise-linear networks (ReLU everywhere, mean pooling, no attention,
-  i.e. alpha = 0 and the GCN baseline) the Hessian is zero almost everywhere, so the
-  graph-level range is undefined (reported as None and counted in `n_zero`). Only
-  softmax attention makes it nonzero here, which is also why the node-level version is
-  the one comparable across models.
+  Caveats: (1) for piecewise-linear networks the Hessian is zero almost everywhere,
+  so the graph-level range is undefined (reported as None and counted in `n_undefined`);
+  this is the case for the alpha = 0 HybridGNN (ReLU layers and ReLU head). (2) With mean
+  pooling into a nonlinear head (the HybridGNN's attention or the GELU GCN), the head's
+  curvature couples *every* pair of nodes through the readout, so the graph-level range
+  can far exceed the message-passing receptive field (an untrained 6-layer GELU GCN gives
+  about 20 hops on a 150-node path). It measures the whole function's interactions,
+  readout included; the node-level version is the one comparable across models, and the
+  one the paper reports on Peptides.
 
 Distances are restricted to the graph's largest connected component (LCC), as in the
 Jacobian measurement; the paper's Peptides graphs are almost all connected.
@@ -143,11 +147,16 @@ def _second_grads(sel: torch.Tensor, h0: torch.Tensor, method: str) -> torch.Ten
     return torch.cat(out)
 
 
-def hessian_influence(model, data, sources: list[int], device, method: str = "auto") -> dict[int, np.ndarray]:
+def hessian_influence(model, data, sources: list[int], device, method: str = "auto",
+                      n_channels: int = 0, rng: Optional[np.random.Generator] = None) -> dict[int, np.ndarray]:
     """{u: I_u [N]} with I_uw = sum_{k, d, d'} |d^2 y_k / d h0_u,d d h0_w,d'| for the graph logits y.
 
-    `method`: "batched" (Hessian-vector products batched over rows), "loop" (one
-    double-backward per row), or "auto" (batched, falling back to the loop).
+    One Hessian row per (output k, source u, source channel d). `n_channels` > 0 sums
+    d over that many randomly drawn channels (the same for every source) instead of all
+    D0, as Bamberger et al. sample channels on LRGB; the normalized range is a ratio,
+    so the subsample only adds noise, not a scale bias. `method`: "batched"
+    (Hessian-vector products batched over rows), "loop" (one double-backward per
+    row), or "auto" (batched, falling back to the loop).
     """
     if len(sources) == 0:
         return {}
@@ -159,6 +168,11 @@ def hessian_influence(model, data, sources: list[int], device, method: str = "au
         return {u: np.zeros(n) for u in sources}
     k, _, d0 = G.shape
     sel = G[:, sources, :]                       # [K, S, D0]
+    if 0 < n_channels < d0:
+        rng = rng if rng is not None else np.random.default_rng(0)
+        chans = torch.as_tensor(np.sort(rng.choice(d0, n_channels, replace=False)), device=G.device)
+        sel = sel[:, :, chans]
+        d0 = n_channels
     if method == "auto":
         try:
             H = _second_grads(sel, h0, "batched")
@@ -169,13 +183,16 @@ def hessian_influence(model, data, sources: list[int], device, method: str = "au
         H = _second_grads(sel, h0, method)
     else:
         raise ValueError(f"unknown method {method!r}")
-    H = H.detach().reshape(k, len(sources), d0, n, d0).abs().sum(dim=(0, 2, 4))  # [S, N]
+    H = H.detach().reshape(k, len(sources), d0, n, -1).abs().sum(dim=(0, 2, 4))  # [S, N]
     return {u: H[i].double().cpu().numpy() for i, u in enumerate(sources)}
 
 
 def measure_graph_range(model, dataset, cfg: MeasureConfig, device, method: str = "auto",
                         min_lcc: int = 4) -> list[dict]:
     """Graph-level (Hessian) range for `cfg.sources_per_graph` random LCC sources per graph.
+
+    Each graph costs out_dim x sources_per_graph x hessian_channels double-backward rows
+    (10 x 4 x 16 = 640 by default on Peptides-func).
 
     Rows: {"graph_id", "u", "n_nodes", "lcc_size", "range_hops", "range_res",
     "total_hessian"}; ranges are None when the source's Hessian row is all zero.
@@ -198,7 +215,8 @@ def measure_graph_range(model, dataset, cfg: MeasureConfig, device, method: str 
         R = effective_resistance_matrix(ei, n, nodes=lcc)
         hops = hop_distance_matrix(ei, n, nodes=lcc)
         local = rng.choice(len(lcc), min(cfg.sources_per_graph, len(lcc)), replace=False)
-        infl = hessian_influence(model, data, [int(lcc[a]) for a in local], device, method=method)
+        infl = hessian_influence(model, data, [int(lcc[a]) for a in local], device, method=method,
+                                 n_channels=cfg.hessian_channels, rng=rng)
         gid = _graph_id(data, gi)
         for a in sorted(int(a) for a in local):
             w = infl[int(lcc[a])][lcc]
