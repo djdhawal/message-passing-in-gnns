@@ -231,6 +231,7 @@ def test_parameter_budget(capsys):
         ("hybrid alpha=0.5", cfg(0.5, hidden=96, layers=5, heads=4)),
         ("hybrid alpha=1", cfg(1.0, hidden=96, layers=5, heads=4)),
         ("gcn h=240 L=6", cfg(arch="gcn", hidden=240, layers=6)),
+        ("gcn Tönshoff", cfg(arch="gcn", hidden=235, layers=6, act="gelu", norm="none", head_layers=3)),
     ]
     with capsys.disabled():
         print("\nmodel                params")
@@ -238,3 +239,31 @@ def test_parameter_budget(capsys):
             n = count_parameters(build_model(c, INFO))
             print(f"{name:<18} {n:>8,}")
             assert n < 500_000, (name, n)
+
+
+def test_gcn_tonshoff_options():
+    """act / norm / head_layers: GELU, no norm, 3-layer head; defaults keep the Phase 1 structure."""
+    m = model(arch="gcn", act="gelu", norm="none", head_layers=3)
+    assert all(isinstance(n, nn.Identity) for n in m.norms)
+    assert isinstance(m.act, nn.GELU)
+    assert sum(isinstance(x, nn.Linear) for x in m.head) == 3
+    assert sum(isinstance(x, nn.GELU) for x in m.head) == 2
+    assert m(mixed_batch()).shape[1] == OUT_DIM
+    old = model(arch="gcn")
+    assert all(isinstance(n, nn.BatchNorm1d) for n in old.norms)
+    assert [type(x) for x in old.head] == [nn.Linear, nn.ReLU, nn.Dropout, nn.Linear]
+    with pytest.raises(ValueError):
+        model(arch="gcn", norm="layer")
+    with pytest.raises(ValueError):
+        model(arch="gcn", act="tanh")
+
+
+def test_config_hash_stable_for_new_fields():
+    """Fields added in Phase 2 do not change the hash of Phase 1 configs at their defaults."""
+    from pathlib import Path
+    from gnn_mech.config import load_config
+    repo = Path(__file__).resolve().parents[1]
+    cfg = load_config(str(repo / "configs/pilot_equivalence.yaml"))
+    assert cfg.hash() == "d5c95c8973"          # value before the Phase 2 fields existed
+    assert load_config(str(repo / "configs/pilot_equivalence.yaml"), ["model.alpha=0.0"]).hash() == "69c07e224f"
+    assert load_config(str(repo / "configs/pilot_equivalence.yaml"), ["model.head_layers=3"]).hash() != cfg.hash()
