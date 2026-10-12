@@ -320,7 +320,7 @@ def main(argv: Optional[list[str]] = None) -> dict[str, Any]:
     parser.add_argument("--synthetic", action="store_true", help="tiny synthetic graph (smoke test)")
     parser.add_argument("--report", default=None, help="dir for the band table and figure (default <out-dir>/<exp>/report)")
     parser.add_argument("overrides", nargs="*", help="RedditConfig overrides, e.g. epochs=200 hidden=64")
-    args = parser.parse_args(argv)
+    args = parser.parse_intermixed_args(argv)
 
     if args.synthetic:
         from .data import synthetic_graph

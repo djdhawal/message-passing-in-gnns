@@ -134,7 +134,7 @@ def main(argv: Optional[list[str]] = None) -> dict:
     parser.add_argument("--dry-run", action="store_true", help="print the run list and estimated hours only")
     parser.add_argument("--no-measure", action="store_true", help="skip mechanistic measurements")
     parser.add_argument("overrides", nargs="*", help="dotted overrides applied to every run, e.g. out_dir=...")
-    args = parser.parse_args(argv)
+    args = parser.parse_intermixed_args(argv)
     runs, measure_minutes = load_sweep(args.sweep, args.overrides)
     print(describe(runs, measure_minutes, measure=not args.no_measure))
     if args.dry_run:
