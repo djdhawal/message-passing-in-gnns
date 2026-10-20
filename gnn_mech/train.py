@@ -85,6 +85,29 @@ def evaluate(model: nn.Module, loader: DataLoader, info: Any, device: torch.devi
     return {"loss": loss, "mae": (out - y).abs().mean().item()}
 
 
+@torch.no_grad()
+def predict(model: nn.Module, dataset, batch_size: int, device: torch.device) -> dict[str, np.ndarray]:
+    """Per-graph outputs in dataset order: {"graph_id" [G], "y" [G, out], "logits" [G, out]}.
+
+    `graph_id` falls back to the dataset index for graphs without one.
+    """
+    model.eval()
+    gids, ys, outs = [], [], []
+    offset = 0
+    for batch in DataLoader(dataset, batch_size=batch_size, shuffle=False):
+        batch = batch.to(device)
+        out = model(batch).float()
+        gid = getattr(batch, "graph_id", None)
+        if gid is None:
+            gid = torch.arange(offset, offset + batch.num_graphs)
+        gids.append(gid.reshape(-1).cpu())
+        ys.append(batch.y.view(out.shape).float().cpu())
+        outs.append(out.cpu())
+        offset += batch.num_graphs
+    return {"graph_id": torch.cat(gids).numpy().astype(np.int64),
+            "y": torch.cat(ys).numpy(), "logits": torch.cat(outs).numpy()}
+
+
 def _train_epoch(model: nn.Module, loader: DataLoader, opt: torch.optim.Optimizer,
                  info: Any, device: torch.device, grad_clip: float) -> float:
     """One pass over `loader`; returns the graph-weighted mean training loss."""

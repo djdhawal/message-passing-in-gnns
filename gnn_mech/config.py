@@ -34,6 +34,11 @@ class ModelConfig:
     dropout: float = 0.1
     attn_dropout: float = 0.1
     pool: str = "mean"
+    # GCN-baseline-only knobs (HybridGNN layers always use ReLU + BatchNorm), added in
+    # Phase 2 to match Tönshoff et al.'s tuned GCN. Defaults reproduce the Phase 1 GCN.
+    act: str = "relu"                 # GCN nonlinearity: "relu" | "gelu"
+    norm: str = "batch"               # GCN per-layer norm: "batch" | "none"
+    head_layers: int = 2              # Linear layers in the graph-level MLP head (both models)
 
 
 @dataclass
@@ -61,6 +66,13 @@ class MeasureConfig:
     targets_per_graph: int = 4
     pairs_per_graph: int = 32
     n_graphs_entropy: int = 500
+    # Graph-level (Hessian) range, Bamberger et al. 2025: n_graphs_range graphs, each
+    # with sources_per_graph sampled source nodes (one batch of Hessian-vector products
+    # per source). 0 graphs disables it. The node-level range needs no setting: it is
+    # computed from the Jacobian sweeps of the targets above.
+    n_graphs_range: int = 30
+    sources_per_graph: int = 4
+    hessian_channels: int = 16        # source-side h0 channels sampled per graph (0 = all D0)
     seed: int = 0
 
 
@@ -81,6 +93,9 @@ class Config:
         """Short hash of everything except seed, out_dir and exp_name.
 
         Runs that differ only by seed share a hash, so seeds group naturally.
+        Fields added after Phase 1 (`_ADDED_FIELDS`) enter the hash only when they
+        differ from their default, so run folders written before they existed keep
+        their hash.
         """
         d = self.to_dict()
         for k in ("seed", "out_dir", "exp_name"):
@@ -89,11 +104,22 @@ class Config:
         d["data"].pop("root")
         d["data"].pop("structure_cache")
         d["data"].pop("num_workers")
+        for section, names in _ADDED_FIELDS.items():
+            defaults = _SECTIONS[section]()
+            for name in names:
+                if d[section][name] == getattr(defaults, name):
+                    d[section].pop(name)
         blob = json.dumps(d, sort_keys=True).encode()
         return hashlib.sha1(blob).hexdigest()[:10]
 
 
 _SECTIONS = {"data": DataConfig, "model": ModelConfig, "train": TrainConfig, "measure": MeasureConfig}
+
+# Fields added after Phase 1 runs were written; omitted from Config.hash() at their default.
+_ADDED_FIELDS = {
+    "model": ("act", "norm", "head_layers"),
+    "measure": ("n_graphs_range", "sources_per_graph", "hessian_channels"),
+}
 
 
 def _coerce(value: str) -> Any:

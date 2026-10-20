@@ -1,0 +1,26 @@
+# Phase 2 Peptides-func re-baseline (docs/phase2_plan.md, A3): local / hybrid /
+# global blends and the tuned GCN baseline, 3 seeds each, all RWSE pe_dim=20.
+# Run on Colab (GPU):  python -m gnn_mech.sweep configs/sweeps/phase2.yaml out_dir=<drive>/runs
+# Re-running the same command skips finished runs and resumes interrupted ones.
+# est_minutes are GPU training minutes per seed; measure_minutes is added per run.
+measure_minutes: 5
+runs:
+  - name: local
+    config: configs/peptides_func_hybrid.yaml
+    overrides: [model.alpha=0.0]
+    seeds: [0, 1, 2]
+    est_minutes: 10
+  - name: hybrid
+    config: configs/peptides_func_hybrid.yaml
+    overrides: [model.alpha=0.5]
+    seeds: [0, 1, 2]
+    est_minutes: 25
+  - name: global
+    config: configs/peptides_func_hybrid.yaml
+    overrides: [model.alpha=1.0]
+    seeds: [0, 1, 2]
+    est_minutes: 25
+  - name: gcn
+    config: configs/peptides_func_gcn.yaml
+    seeds: [0, 1, 2]
+    est_minutes: 15

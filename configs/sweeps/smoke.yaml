@@ -1,0 +1,14 @@
+# Two-entry CPU smoke sweep on synthetic-tiny graphs (no download): exercises
+# sweep -> train -> preds -> measurements (with range) -> skip / resume.
+measure_minutes: 0.1
+runs:
+  - name: hybrid
+    config: configs/smoke.yaml
+    overrides: [model.alpha=0.5]
+    seeds: [0]
+    est_minutes: 0.1
+  - name: local
+    config: configs/smoke.yaml
+    overrides: [model.alpha=0.0]
+    seeds: [0]
+    est_minutes: 0.1

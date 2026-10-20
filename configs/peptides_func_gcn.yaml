@@ -1,5 +1,15 @@
-# Tuned GCN baseline on Peptides-func (Tönshoff et al. style: residuals, BN,
-# mean pooling). Reference point for the hybrid alpha sweep.
+# Tuned GCN baseline on Peptides-func, aligned with Tönshoff et al. (TMLR 2024)
+# `configs/LRGB-tuned/peptides-func-GCN.yaml` in github.com/toenshoff/LRGB.
+# Their reported test AP: about 0.686 (published reference for gate G1: GCN >= 0.66).
+#
+# Matched: 6 GCNConv layers, hidden 235, GELU, residual, dropout 0.1, no per-layer
+# norm, mean pooling, 3-layer MLP head, AdamW lr 1e-3, wd 0, 250 epochs, cosine
+# with 5 warmup epochs, grad-norm clipping at 1.0, batch 200, RWSE with 20 steps.
+# Remaining differences (kept so every model shares one input encoder):
+#   - RWSE: ours is Linear(20 -> hidden) summed into the atom embedding; theirs
+#     BatchNorm(raw RWSE) -> Linear(20 -> 28) concatenated to a 207-dim atom embedding.
+#   - Head dropout: ours after each hidden activation; theirs before every Linear.
+# 491,865 parameters (LRGB budget 500k).
 exp_name: peptides_func_gcn
 out_dir: ./runs
 data:
@@ -7,12 +17,15 @@ data:
   pe_dim: 20
 model:
   arch: gcn
-  hidden: 240
+  hidden: 235
   layers: 6
   dropout: 0.1
+  act: gelu
+  norm: none
+  head_layers: 3
 train:
   epochs: 250
-  batch_size: 128
+  batch_size: 200
   lr: 1.0e-3
   weight_decay: 0.0
   warmup_epochs: 5
