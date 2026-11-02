@@ -11,6 +11,9 @@
 \usepackage{graphicx}
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepgfplotslibrary{groupplots}
 \graphicspath{{figures/}}
 
 % ---- restrained palette ----
@@ -51,7 +54,7 @@
 
 \title{Mechanistic Analysis of Over-Squashing and Attention Dilution in Hybrid GNNs}
 \subtitle{Problem, data, replications, pipeline, measures and first results}
-\author{MS Applied Data Science capstone}
+\author{Collin McDevitt, Dhawal Dixit, Andy Jiang\\[0.2em]{\small Supervisor: Dr.\ Greg Green \quad MS Applied Data Science capstone}}
 \date{October 2026}
 
 \begin{document}
@@ -128,7 +131,7 @@
     \toprule
     Gate & Criterion & Status \\
     \midrule
-    \textbf{G0} & Rebuilt 4-layer hybrid, $\alpha=0.5$, seed 0: test AP $\ge 0.652$ on Peptides-func. $\alpha=0$ and $\alpha=1$ must also train & pending (Colab) \\
+    \textbf{G0} & Rebuilt 4-layer hybrid, $\alpha=0.5$, seed 0: test AP $\ge 0.652$ on Peptides-func. $\alpha=0$ and $\alpha=1$ must also train & \alert{not passed}: 0.6259 \\
     \addlinespace
     \textbf{G1} & Training is sound: mean test AP $\alpha=0.5 \ge 0.63$, $\alpha=1 \ge 0.60$, GCN $\ge 0.66$ (or the gap documented) & pending \\
     \addlinespace
@@ -137,7 +140,7 @@
   \end{tabular}
   \vspace{0.8em}
 
-  \raggedright\snote{If G1 fails, change one thing at a time on seed 0: training curves, then lr/warmup, then dropout, then BatchNorm vs LayerNorm, then 300 epochs.}
+  \raggedright\snote{If G1 fails, change one thing at a time on seed 0: training curves, then lr/warmup, then dropout, then BatchNorm vs LayerNorm, then 300 epochs. The first G0 run fell short, so this loop now starts with G0.}
 \end{frame}
 
 % =====================================================================
@@ -230,7 +233,8 @@
     Demos 1--3 & mechanisms on real model code & \illus \\
     Synthetic tree sweep v1 & MP vs hybrid vs attention & done, confounded \\
     \midrule
-    G0 / Phase 2 sweep / real Reddit & re-baseline and measure & \alert{not run} \\
+    G0 calibration (Colab T4) & rebuilt hybrid vs 0.652 AP & run once, \alert{0.6259 (below)} \\
+    Phase 2 sweep / real Reddit & re-baseline and measure & \alert{not run} \\
     \bottomrule
   \end{tabular}
 \end{frame}
@@ -250,7 +254,8 @@
     \end{column}
     \begin{column}{0.46\textwidth}
       \begin{itemize}
-        \item RWSE, 4 layers, hidden 96, 1 seed
+        \item RWSE, 200 epochs (patience 40), 1 seed
+        \item GPS: 4 layers, width 96 (386,246 params). GCN: 6 layers, width 240, BatchNorm (412,790 params)
         \item \textcolor{good}{GPS reproduces} the published value
         \item GCN is 0.06 short of Tönshoff et al.'s tuned value, so this is only a \alert{partial} replication
         \item G0's 0.652 threshold comes from this GPS run
@@ -457,7 +462,7 @@
 \begin{frame}{Baselines: GCN (Tönshoff-aligned) and the Reddit models}
   \begin{columns}[T]
     \begin{column}{0.5\textwidth}
-      \textbf{GCN} \snote{(Tönshoff et al. 2023)}
+      \textbf{GCN} \snote{(Tönshoff et al. 2024)}
       \[ x \leftarrow x + \mathrm{Dropout}\big(\mathrm{GELU}(\tilde D^{-1/2}\tilde A\tilde D^{-1/2} x W)\big) \]
       \begin{itemize}\small
         \item 6 layers, hidden 235, no per-layer norm, 3-layer head
@@ -566,7 +571,7 @@
     \begin{column}{0.42\textwidth}
       \begin{itemize}\small
         \item \textbf{Node-level} (Jacobian): reuses the Jacobian sweeps; matches the paper's LRGB setting
-        \item \textbf{Graph-level} (Hessian): 30 graphs, $\approx$50\,s per graph on CPU
+        \item \textbf{Graph-level} (Hessian): 30 graphs, $\approx$50\,s per graph on CPU; \alert{ran out of memory on the T4} in G0
         \item \alert{Caveats}: the Hessian is zero for ReLU-only $\alpha=0$; pooling into a nonlinear head extends the range past the receptive field
         \item Reading rule: all hop ranges $\le L/2 \Rightarrow$ short-range
       \end{itemize}
@@ -577,6 +582,48 @@
 
 % =====================================================================
 \section{Results}
+
+\begin{frame}{Gate G0 calibration on Colab: \alert{below threshold}}
+  \begin{columns}[c]
+    \begin{column}{0.6\textwidth}
+      \centering
+      \begin{tikzpicture}
+      \begin{groupplot}[group style={group size=2 by 1, horizontal sep=0.95cm},
+          width=0.53\textwidth, height=4.2cm, xlabel={Epoch}, xmin=25, xmax=190,
+          tick label style={font=\tiny}, label style={font=\scriptsize},
+          grid=major, grid style={gray!25}]
+      \nextgroupplot[ylabel={Training loss}, ymin=0, ymax=0.16]
+      \addplot[thick, color=ink, mark=*, mark size=0.9pt] coordinates {
+       (30,0.1519) (40,0.1180) (50,0.0871) (60,0.0693) (70,0.0516) (80,0.0442) (90,0.0369)
+       (100,0.0309) (110,0.0253) (120,0.0220) (130,0.0189) (140,0.0155) (150,0.0131)
+       (160,0.0115) (170,0.0099) (180,0.0092) (182,0.0092)};
+      \nextgroupplot[ylabel={AP}, ymin=0.50, ymax=0.67,
+          legend style={font=\tiny, at={(0.98,0.03)}, anchor=south east}]
+      \addplot[thick, color=accent, mark=*, mark size=0.9pt] coordinates {
+       (30,0.5475) (40,0.5071) (50,0.5820) (60,0.5843) (70,0.6027) (80,0.5989) (90,0.5885)
+       (100,0.6097) (110,0.6151) (120,0.6069) (130,0.6126) (140,0.6126) (150,0.6261)
+       (160,0.6262) (170,0.6196) (180,0.6197) (182,0.6225)};
+      \addlegendentry{Val AP}
+      \addplot[thick, dashed, color=good] coordinates {
+       (30,0.5716) (50,0.6126) (90,0.6230) (130,0.6183) (150,0.6259) (182,0.6259)};
+      \addlegendentry{Test AP at best val}
+      \addplot[thin, densely dotted, color=warm, domain=25:190] {0.652};
+      \addlegendentry{G0 (0.652)}
+      \end{groupplot}
+      \end{tikzpicture}
+
+      \snote{\texttt{pilot\_equivalence.yaml}: 4 layers, $\alpha=0.5$, seed 0, 404,654 params, T4, $\approx$19\,s/epoch}
+    \end{column}
+    \begin{column}{0.38\textwidth}
+      \begin{itemize}\small
+        \item Best val AP 0.6281 at epoch 142 (stopped at 182); \textbf{test AP 0.6259}, 0.026 short of 0.652 and below G1's 0.63
+        \item Loss keeps falling to 0.009 while val AP plateaus near 0.62 from epoch 90: \alert{overfitting}, not underfitting
+        \item Measurements not saved: the Hessian graph range ran out of memory on the T4 and was stopped
+        \item $\alpha=0$ and $\alpha=1$ sanity runs started, not finished
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
 
 \begin{frame}{River experiment: setup}
   \begin{columns}[c]
@@ -657,7 +704,7 @@
     \begin{column}{0.44\textwidth}
       \begin{itemize}\small
         \item MP does \emph{better} when upstream inputs are hidden (same on the development set)
-        \item Attention and the hybrid exploit upstream context: about $-12\%$ NRMSE vs radius 0
+        \item Attention and the hybrid exploit upstream context: NRMSE about 13\% and 12\% lower than at radius 0
         \item \alert{Consistent with} over-squashing, but also with optimisation, mean-aggregation or parameter effects
         \item The ablation masks inputs; it does not rewire the graph
       \end{itemize}
@@ -684,13 +731,15 @@
         499 & 29 & 13 & \alert{$-4.4\%$} \\
         \bottomrule
       \end{tabular}
+
+      {\tiny Gain averaged over seeds and horizons}
     \end{column}
     \begin{column}{0.56\textwidth}
       \begin{itemize}\scriptsize
         \item The fastest-growing outlet (499) gains \emph{least}
-        \item Spearman $\rho(V(2),\text{gain})$ is $\approx-0.7$ vs MP but $+0.9$ vs attention: \textbf{the sign flips with the reference}
-        \item $n=5$; leave-one-group-out ranges span both signs
-        \item Development set: after adjusting for size, depth and area, $\rho\approx0$
+        \item Spearman $\rho(V(2),\text{gain})$ is $-0.70$ vs MP (1- and 3-day) but $+0.90$ vs attention: \textbf{the sign flips with the reference}
+        \item $n=5$; leave-one-group-out ranges span both signs ($-1.0$ to $+0.5$)
+        \item 27 development outlets, adjusted for size, depth and area: $\rho\approx0$ for weather vs MP; other references and regimes $-0.27$ to $+0.37$
         \item A graph-conditioned $\alpha$ selector is 2.3\% \emph{worse} than a fixed $\alpha$
       \end{itemize}
     \end{column}
@@ -707,15 +756,17 @@
       \centering\scriptsize
       \begin{tabular}{@{}lrr@{}}
         \toprule
-        Model & Params & s/epoch \\
+        Model & Active params & s/epoch \\
         \midrule
-        MP & 355,715 & 55 \\
-        Hybrid & 490,979 & 80--82 \\
-        Attention & 291,299 & 55 \\
-        Pooling & 26,627 & 15 \\
-        Outlet GRU & 22,403 & 11 \\
+        MP & 355,715 & 52.9 \\
+        Hybrid & 490,979 & 80.1--80.6 \\
+        Attention & 291,299 & 54.2 \\
+        Pooling & 26,627 & 15.0 \\
+        Outlet GRU & 22,403 & 10.7 \\
         \bottomrule
       \end{tabular}
+
+      {\tiny Training time only, RTX 3080 Laptop GPU}
       \begin{itemize}\small
         \item A hybrid takes $\approx1.5\times$ the time per epoch of either endpoint
         \item Pooling matches the best hybrid with $\approx5\%$ of the parameters
@@ -725,9 +776,9 @@
 \end{frame}
 
 \begin{frame}{Status: what does \emph{not} exist yet}
-  \begin{alertblock}{No Phase 2 real-data GPU results yet}
+  \begin{alertblock}{Only one Phase 2 real-data GPU run so far}
     \begin{itemize}
-      \item G0 not run, so the rebuilt hybrid has not been checked against 0.652 AP
+      \item G0 ran once: 0.6259 test AP vs the 0.652 threshold, with no measurements saved; $\alpha=0$ and $\alpha=1$ unfinished
       \item Phase 2 sweep (12 runs) not run: no re-baselined AP, no G1/G2, no Jacobian slope CIs, no entropy-vs-size on correctly built models, no range on real Peptides
       \item Aligned Tönshoff GCN not run; only the pilot's 0.6263 exists
       \item Reddit not run on the real graph (SNAP is blocked in the sandbox)
@@ -743,7 +794,7 @@
 
 \begin{frame}{Next: run on Colab (in order)}
   \begin{enumerate}
-    \item \textbf{G0}: \texttt{pilot\_equivalence.yaml}, $\alpha=0.5$ needs $\ge0.652$ AP; $\alpha=0$ and $\alpha=1$ must train
+    \item \textbf{Close the G0 gap} (0.6259 $\to$ 0.652), one change at a time on seed 0: dropout / weight decay against the overfitting, then lr and warmup, then norms. Finish the $\alpha=0$ and $\alpha=1$ runs. On the T4, set \texttt{measure.n\_graphs\_range=0} (or lower it) to avoid the Hessian running out of memory
     \item \textbf{Phase 2 sweep}: 12 runs, $\approx$5 GPU-h ($\approx$4\,h training + $\approx$1\,h measuring)
     \item \textbf{Range sanity} on real Peptides: $\alpha=0$ mean node range $\le 5$ hops
     \item \textbf{Real Reddit}: reproduce the pilot's band ordering, select a target from the data, then 30 seeds $\times$ \{SAGE, VMN\} $\times$ \{distance, random\}
@@ -782,7 +833,7 @@
     \item \textbf{Global access helps when the task needs distant information}: synthetic far query, weather-only rivers ($\alpha=0.75$ is 9.6\% better than MP)
     \item When local history is enough (weather+flow), MP or pooling suffices and \alert{the hybrid only adds cost}
     \item \alert{Graph growth does not predict} the hybrid's gain: the sign flips with the reference model
-    \item The pilot Peptides evidence is flawed; the rebuilt, tested pipeline is ready for G0 and the Phase 2 sweep
+    \item The pilot Peptides evidence is flawed. The rebuilt pipeline's first G0 run reached 0.6259 test AP, \alert{short of 0.652} and overfitting; that gap is closed before the Phase 2 sweep
     \item Goal: a phase diagram of best $\alpha$ against effective resistance and task range
   \end{itemize}
 \end{frame}
