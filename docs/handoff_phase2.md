@@ -1,5 +1,7 @@
 # Handoff: starting Phase 2
 
+> **Superseded (2026-11-02)** by `docs/handoff_social.md`. The project moved to large social graphs; this file is kept for its "Things you must know" notes.
+
 For the orchestrator agent picking up Phase 2. Read this, then
 `docs/roadmap.md` (big picture), `docs/phase2_plan.md` (what to build) and
 `docs/phase1_plan.md` (the package's interface contract).
