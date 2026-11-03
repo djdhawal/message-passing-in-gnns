@@ -287,3 +287,48 @@ eval, so Jacobians are deterministic. Pure PyTorch (double backward must work). 
 - `01_fetch_datasets.ipynb`: fetch and process every dataset into Drive (CPU runtime is fine).
 - `02_s2_<dataset>.ipynb` (one per dataset): its sweep file, `--dry-run` first, then the sweep; re-running resumes.
 - `03_s2_results.ipynb`: collect `metrics.json` across all S2 runs into a table and α-curve plots.
+
+## Build contract: full-graph mode + planted targets (2026-11-03)
+
+Why: notebook 04 (Higgs, 500-node METIS subgraphs) showed no graph effect, and a local check showed the cause:
+only 32% of follow edges fall inside 500-node parts, and the neighbour signal (logistic regression, +0.018 AUROC with
+full-graph neighbours) drops to +0.001 with in-part neighbours. Subgraphing removes the signal the knobs are meant to
+probe. Planted long-range targets (S3) would be hurt more, since k-hop shells cross part boundaries.
+
+### Workstream F: full-graph mode (owns `gnn_mech/social/dataset.py`, `social/subgraph.py`, `gnn_mech/layers.py`,
+`models.py`, `config.py`, `train.py`, `measure/*`, `configs/social/higgs_full*.yaml`, `configs/sweeps/higgs_full_*.yaml`,
+`notebooks/social/06_higgs_full_graph.ipynb`, `tests/test_full_graph.py`)
+
+- `data.sampler: "full"` (existing field, new value). METIS parts (`subgraph_size`, `split_seed`, `val_frac`, `test_frac`)
+  only decide **which nodes are labelled** in each split. Each split's dataset is a one-element list holding the **whole
+  graph** with `y_mask` = labelled nodes of that split's parts (transductive: every node's features are visible, only
+  train labels are trained on). x standardized with train-labelled-node statistics. `graph_id` 0, `node_id` = arange.
+- RWSE on large graphs: no dense eigh. Use pe_dim 0 or a sparse / sampled estimate; document the choice.
+- Full-batch training: one optimizer step per epoch, so full-graph configs need far more epochs (e.g. 500, patience 100).
+- Attention on the full graph: k=∞ uses `attn: performer` (linear). `attn: radius` must work sparsely on large graphs:
+  softmax over the k-hop pair list (structure-only, computed once and cached), with a pair budget
+  (`model.attn_max_pairs`, new ModelConfig field, default-neutral for hashes); dense path unchanged for small graphs.
+  Report pair counts for k=1, 2 on Higgs-follow.
+- Measurements must run on a 35.6k-node graph (approximate resistance rows already exist above 5,000 nodes; entropy for
+  sparse radius attention via its sparse rows, or skipped with a recorded reason).
+- Sweeps (both targets `active_after`, `activate_passive` × split seeds 0,1,2 × model seeds 0,1; local gcn, branch_affine
+  false): `higgs_full_affine.yaml` (alpha 0, .25, .5, .75, 1 with Performer, + mlp, gcn) and `higgs_full_radius.yaml`
+  (k = 0, 1, 2, inf (Performer) + mlp, gcn). exp_names `higgs_full_affine`, `higgs_full_radius`.
+
+### Workstream P: planted targets (owns new `gnn_mech/social/plant.py`, the planted-target hooks in
+`gnn_mech/social/sources.py` (`target_columns`, `node_target`, `node_inputs` only), `configs/social/higgs_plant.yaml`,
+`configs/sweeps/higgs_full_plant.yaml`, `notebooks/social/07_higgs_planted.ipynb`, `tests/test_plant.py`)
+
+- Target names: `data.target = "plant:<family>:<k>"`, optional `:s<seed>` suffix (default seed 0), on **any** social
+  dataset. Families (first build): `shell_mean` (y_v = mean of planted z_u over nodes at exactly k hops; sanity) and
+  `retrieve` (keyed retrieval from the k-hop shell; the main test), regression. Planted channels are appended to the real
+  node inputs by `node_inputs`; the real features stay as nuisance inputs. Nodes whose target is undefined get NaN
+  (→ y_mask False). Deterministic from (graph, family, k, seed); computed on the full graph `graph.edge_index`
+  (follow layer for Higgs), so it works with any sampler.
+- Ground truth: `plant.analytic_range(...)` gives the Bamberger range of the target function itself (from its exact
+  Jacobian w.r.t. the planted channels), which must equal k for both families.
+- Report on Higgs-follow: shell sizes by k (effective diameter ≈ 3.7), eligible nodes per k, and how the retrieval key
+  count was chosen so the expected number of matches stays small at every k.
+- Sweep `higgs_full_plant.yaml` uses F's `data.sampler: full` and names only: k ∈ {1, 2, 3, 4} × both families ×
+  variants {mlp, gcn, hybrid alpha 0, hybrid alpha 1 (performer), hybrid alpha 0.5 (performer), radius 1, radius 2}
+  × model seeds 0, 1, split seed 0. exp_name `higgs_full_plant`.
