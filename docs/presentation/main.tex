@@ -476,7 +476,7 @@
     \texttt{02\_s2\_<dataset>} & first $\alpha$ sweep, one notebook per dataset & \sdone{} (Higgs) \\
     \texttt{03\_s2\_results} & collect runs into tables and $\alpha$ curves & built \\
     \texttt{04\_higgs\_affine\_alpha} & affine-free $\alpha$ sweep, 500-node subgraphs & \sdone \\
-    \texttt{05\_higgs\_radius} & radius sweep, 500-node subgraphs & \srun \\
+    \texttt{05\_higgs\_radius} & radius sweep, 500-node subgraphs & \sdone \\
     \texttt{06\_higgs\_full\_graph} & full-graph $\alpha$ and radius sweeps & \srun \\
     \texttt{07\_higgs\_planted} & planted long-range targets & \sbuild \\
     \bottomrule
@@ -598,7 +598,7 @@
         \item \textbf{$\alpha$ sweep}: $\alpha \in \{0, .25, .5, .75, 1\}$, affine-free, Performer
         \item \textbf{Radius sweep}: $k \in \{0, 1, \infty\}$ \snote{($k=2$: 299M pairs, does not fit)}
         \item + MLP, GCN; both targets; 3 split $\times$ 2 model seeds
-        \item Also running: radius sweep on 500-node subgraphs (expected to share the subgraph problem)
+        \item Done on 500-node subgraphs: $k=1$ best by a hair, $k\ge2$ about 0.005--0.01 lower, all within noise; no radius beats the MLP
       \end{itemize}
     \end{column}
     \begin{column}{0.46\textwidth}

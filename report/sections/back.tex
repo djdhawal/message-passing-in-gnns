@@ -18,7 +18,7 @@ Higgs $\alpha$ sweep, first version & Does mixing in attention help a real socia
 Higgs $\alpha$ sweep, affine-free & Same question with $\alpha$ as a true fixed weight & Complete \\
 Subgraph diagnosis & Why no graph model beat the MLP & Complete \\
 Full-graph $\alpha$ and radius sweeps & Same sweeps without cutting the graph & Running \\
-Radius sweep on subgraphs & Attention radius $k$ on 500-node parts & Running \\
+Radius sweep on subgraphs & Attention radius $k$ on 500-node parts & Done: $k=1$ best by a hair, no gain over MLP \\
 Planted targets ($\texttt{shell\_\allowbreak mean}(k)$, $\texttt{retrieve}(k)$) & Tasks with a known range $k$ & Running (being built) \\
 Phase diagram (S4), GFM benchmark (S5), benchmark release (S6) & Answer the thesis question; test foundation models; release tasks & Planned \\
 \bottomrule
@@ -232,7 +232,32 @@ $k$ & Eligible & Median shell & Ball share & Key matches & Key-match $R^2$ \\
 \subsection{Attention Radius on Subgraphs}
 \emph{Design.} This sweep is the radius counterpart of the affine-free sweep and uses the same 500-node subgraphs, targets, seeds and baselines. It fixes $\alpha=0.5$ and varies the attention radius $k\in\{0,1,2,3,4,\infty\}$ with exact softmax attention inside each subgraph. It was launched before the partition diagnosis, and it shares that problem: every radius sees only the 32\% of edges inside the parts. We keep it as a control. If its results are flat while the full-graph radius sweep is not, that confirms that cutting the graph, not the radius knob, hid the effect. If both are flat, the Higgs labels are local.
 
-\emph{Results.} \pending{Radius sweep on 500-node Higgs subgraphs: test AUROC by $k$ for both targets, with MLP and GCN references.}
+\emph{Results.} All 96 runs finished (Table~\ref{tab:higgsradius}). The pattern is faint but points the same way on both targets: attention limited to one hop is the best radius, and letting attention look further costs a little. On \texttt{active\_\allowbreak after}, test AUROC falls from 0.705 at $k=1$ to 0.698 at $k=4$ and 0.700 at $k=\infty$. On \texttt{activate\_\allowbreak passive} it falls from 0.663 at $k=1$ to about 0.653 for every $k\ge2$. This is the direction that attention dilution predicts: each extra hop adds many more users to every softmax, and most of them carry nothing useful, so attention spread over them gets noisier.
+
+Three things keep us from reading much into it. First, every gap is smaller than one standard deviation across split and model seeds. Second, no radius beats the baselines: the MLP is best on \texttt{active\_\allowbreak after} and GCN on \texttt{activate\_\allowbreak passive}. Third, the sweep ran on the same cut-up subgraphs as the affine-free sweep, so every model saw only about a third of the edges. Here $k=\infty$ means ``the whole 500-node part'', not the whole graph. The sweep is therefore a control. It shows that the radius knob runs and behaves sensibly, but the full-graph sweep is the real test.
+
+\begin{table}[htbp]
+\caption{Attention radius on 500-node Higgs subgraphs: test AUROC}
+\label{tab:higgsradius}
+\centering\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Variant & \texttt{active\_after} & \texttt{activate\_passive} \\
+\midrule
+MLP (no graph) & \textbf{0.710} $\pm$ 0.012 & 0.664 $\pm$ 0.009 \\
+GCN & 0.706 $\pm$ 0.010 & \textbf{0.666} $\pm$ 0.011 \\
+$k=0$ (message passing only) & 0.704 $\pm$ 0.011 & 0.660 $\pm$ 0.011 \\
+$k=1$ & 0.705 $\pm$ 0.009 & 0.663 $\pm$ 0.006 \\
+$k=2$ & 0.703 $\pm$ 0.008 & 0.654 $\pm$ 0.008 \\
+$k=3$ & 0.702 $\pm$ 0.011 & 0.653 $\pm$ 0.010 \\
+$k=4$ & 0.698 $\pm$ 0.006 & 0.653 $\pm$ 0.014 \\
+$k=\infty$ (whole subgraph) & 0.700 $\pm$ 0.006 & 0.654 $\pm$ 0.011 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.85\textwidth}{\footnotesize\textit{Note.} Mean $\pm$ standard deviation over 3 split seeds $\times$ 2 model seeds (6 runs each). Hybrid variants use $\alpha=0.5$, a GCN local branch, affine-free branch norms and exact softmax attention masked to $k$ hops; $k=0$ has no attention branch.}
+\end{table}
 
 % ================================================================
 \section{Discussion}
