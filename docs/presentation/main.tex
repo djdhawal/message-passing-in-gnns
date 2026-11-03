@@ -51,11 +51,16 @@
 \newcommand{\pilot}{\textcolor{warm}{\textbf{[pilot]}}}
 \newcommand{\illus}{\textcolor{warm}{\textbf{[illustrative, untrained]}}}
 \newcommand{\snote}[1]{{\scriptsize\textcolor{ink!70}{#1}}}
+\newcommand{\sdone}{\textcolor{good}{\textbf{done}}}
+\newcommand{\srun}{\textcolor{warm}{\textbf{running}}}
+\newcommand{\sbuild}{\textcolor{warm}{\textbf{being built}}}
+\newcommand{\splan}{\textcolor{ink!60}{planned}}
+\newcommand{\pending}[1]{\begin{alertblock}{Results pending}\small #1\end{alertblock}}
 
 \title{Mechanistic Analysis of Over-Squashing and Attention Dilution in Hybrid GNNs}
-\subtitle{Problem, data, replications, pipeline, measures and first results}
+\subtitle{How far should a graph model listen? Large social graphs, two knobs, first results}
 \author{Collin McDevitt, Dhawal Dixit, Andy Jiang\\[0.2em]{\small Supervisor: Dr.\ Greg Green \quad MS Applied Data Science capstone}}
-\date{October 2026}
+\date{November 2026}
 
 \begin{document}
 
@@ -67,40 +72,278 @@
 \end{frame}
 
 % =====================================================================
-\section{Problem overview}
+\section{The question}
 
-
-\begin{frame}{Over-squashing: Jacobian decay and resistance bottlenecks}
+\begin{frame}{Message passing: a game of telephone}
+  \centering
+  \begin{tikzpicture}[n/.style={circle,draw=ink!70,fill=soft,minimum size=0.75cm,font=\small},
+      arr/.style={-{Latex[length=2mm]},thick,accent}]
+    \foreach \i/\l in {0/u,1/,2/,3/,4/v} \node[n] (p\i) at (\i*2.2,0) {$\l$};
+    \fill[warm] (p0) circle (4pt);
+    \foreach \i in {0,...,3} {
+      \pgfmathtruncatemacro\j{\i+1}
+      \draw[arr] (p\i) to[bend left=25] node[above,font=\scriptsize,ink] {layer \j} (p\j);
+    }
+    \node[below=0.15cm of p0,font=\scriptsize,warm] {the message};
+    \node[below=0.15cm of p4,font=\scriptsize,ink] {needs it};
+  \end{tikzpicture}
+  \vspace{0.8em}
+  \raggedright
   \begin{itemize}
-    \item Bottlenecks compress information from many nodes \snote{(Alon \& Yahav 2021; Topping et al. 2022)}
-    \item Measured by the sensitivity of a node's output to a distant input:
-      \[ J(u,v) = \Big\|\frac{\partial h_v^{(L)}}{\partial h_u^{(0)}}\Big\|_F \quad\text{decays with distance} \]
-    \item Depends on width, depth and topology \snote{(Di Giovanni et al. 2023)}
-    \item Structural predictor: \textbf{effective resistance} $R(u,v)$; total resistance bounds over-squashing \snote{(Black et al. 2023)}
-    \item On trees $R(u,v)$ equals the hop distance
+    \item A graph neural network (GNN) updates each node from its \textbf{neighbours}
+    \item One layer = one hop. With $L$ layers a node hears at most $L$ hops away
+    \item Far information is \textbf{relayed} node by node, and mixed with everything else on the way
   \end{itemize}
 \end{frame}
 
-\begin{frame}{Attention dilution: entropy $\to \log N$, sensitivity $\sim 1/N$}
-  \begin{itemize}
-    \item Global softmax attention: row $a_{i\cdot}$ is a distribution over $N$ nodes
-    \item Uninformative attention is uniform: entropy $H = \log N$, so each source has weight $1/N$
-    \item Diagnostic: per-head entropy normalised by $\log N$
-      \[ \tilde H = H/\log N \in [0,1],\qquad \tilde H \approx 1 \;\Rightarrow\; \text{attention fails to concentrate} \]
-    \item Dilution in a \emph{trained} model: $\tilde H$ stays near 1 as $N$ grows
-    \item Raw $H$ rising with $N$ is automatic and is not, by itself, evidence of dilution
-  \end{itemize}
+\begin{frame}{Over-squashing: many voices through one bridge}
+  \begin{columns}[c]
+    \begin{column}{0.5\textwidth}
+      \centering
+      \begin{tikzpicture}[n/.style={circle,fill=accent!70,inner sep=2.2pt},m/.style={circle,fill=good!80,inner sep=2.2pt}]
+        \foreach \i in {0,...,5} \node[n] (a\i) at ($(0,0)+(\i*60:0.95)$) {};
+        \foreach \i in {0,...,5} \node[m] (b\i) at ($(3.6,0)+(\i*60:0.95)$) {};
+        \foreach \i in {0,...,4} {
+          \pgfmathtruncatemacro\s{\i+1}
+          \foreach \j in {\s,...,5} {\draw[ink!35] (a\i)--(a\j); \draw[ink!35] (b\i)--(b\j);}
+        }
+        \draw[warm,line width=2pt] (a0) -- (b3);
+        \node[above,font=\scriptsize,warm] at (1.8,0.05) {bridge};
+        \node[font=\scriptsize] at (0,-1.35) {cluster A};
+        \node[font=\scriptsize] at (3.6,-1.35) {cluster B};
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{itemize}
+        \item Everything B knows must reach A through \textbf{one edge}
+        \item Each node stores a fixed-size vector, so the messages get \textbf{compressed and lost}
+        \item This is \alert{over-squashing} \snote{(Alon \& Yahav 2021; Topping et al.\ 2022)}
+        \item A narrow bridge = high \textbf{effective resistance} between A and B
+      \end{itemize}
+    \end{column}
+  \end{columns}
 \end{frame}
 
-\begin{frame}{The hybrid idea: an $\alpha$-blend per layer}
-  \[ x' = x + \mathrm{Dropout}\big((1-\alpha)\,h_{\text{loc}} + \alpha\,h_{\text{glb}}\big) \]
-  \begin{itemize}
-    \item $h_{\text{loc}}$: GINE message passing; $h_{\text{glb}}$: multi-head self-attention
-    \item $\alpha=0$: pure MPNN \quad $\alpha=1$: pure transformer \quad in between: GraphGPS-like \snote{(Rampášek et al. 2022)}
-    \item $\alpha$ is a fixed coefficient in the layer equation
-    \item It is \alert{not} ``the share of information carried by attention''
-  \end{itemize}
+\begin{frame}{Attention: a direct line, but too many voices}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \centering
+      \textbf{Direct line}\\[0.4em]
+      \begin{tikzpicture}[n/.style={circle,draw=ink!60,fill=soft,inner sep=2.2pt}]
+        \foreach \i in {0,...,5} \node[n] (q\i) at (\i*0.9,0) {};
+        \foreach \i in {0,...,4} {\pgfmathtruncatemacro\j{\i+1}\draw[ink!40] (q\i)--(q\j);}
+        \node[circle,fill=warm,inner sep=2.6pt] at (q0) {};
+        \node[circle,fill=good,inner sep=2.6pt] at (q5) {};
+        \draw[accent,very thick,-{Latex}] (q0) to[bend left=40] node[above,font=\scriptsize] {one step} (q5);
+      \end{tikzpicture}\\[0.3em]
+      \begin{itemize}\small
+        \item Graph transformers let every node \textbf{look at every node}
+        \item No relay, no bridge to squeeze through
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \centering
+      \textbf{Dilution}\\[0.4em]
+      \begin{tikzpicture}
+        \node[circle,fill=warm,inner sep=2.6pt] (c) at (0,0) {};
+        \foreach \i in {0,...,15} {
+          \node[circle,draw=ink!50,fill=soft,inner sep=1.8pt] (r\i) at (\i*22.5:1.25) {};
+          \draw[ink!30] (c)--(r\i);
+        }
+        \node[circle,fill=good,inner sep=2.4pt] at (r2) {};
+        \draw[good,thick] (c)--(r2);
+        \node[right,font=\scriptsize,good] at (r2.east) {the one that matters};
+      \end{tikzpicture}\\[0.2em]
+      \begin{itemize}\small
+        \item Attention is split among \textbf{all} nodes; most are irrelevant
+        \item The useful signal drowns: \alert{attention dilution}
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Task range: how far must a node listen?}
+  \begin{columns}[c]
+    \begin{column}{0.42\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \foreach \r/\c in {2.0/accent!8,1.35/accent!16,0.7/accent!28} \fill[\c] (0,0) circle (\r);
+        \foreach \r in {0.7,1.35,2.0} \draw[accent!60] (0,0) circle (\r);
+        \node[circle,fill=warm,inner sep=2.6pt,label={[font=\scriptsize]below:$v$}] at (0,0) {};
+        \node[font=\scriptsize] at (0,0.5) {1 hop};
+        \node[font=\scriptsize] at (0,1.05) {2 hops};
+        \node[font=\scriptsize] at (0,1.7) {3 hops};
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.56\textwidth}
+      \begin{itemize}
+        \item \textbf{Short range}: friends are enough
+        \item \textbf{Long range}: needs friends of friends of friends
+        \item Measured from the trained model \snote{(Bamberger et al., ICML 2025)}:
+          \[ \rho_v = \frac{\sum_u I_{vu}\, d(v,u)}{\sum_u I_{vu}} \]
+          \snote{$I_{vu}$: how much $u$'s input moves $v$'s output; $d$: hops}
+        \item Average distance a node ``listens'' to
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Research question}
+  \begin{columns}[c]
+    \begin{column}{0.55\textwidth}
+      \begin{block}{Question}
+        Do \textbf{graph structure} (bottlenecks) and \textbf{task range} predict how far a model's attention should reach?
+      \end{block}
+      \begin{itemize}
+        \item Too short a reach $\Rightarrow$ over-squashing
+        \item Too long a reach $\Rightarrow$ dilution
+        \item Measures explain \emph{why}: Jacobian, attention entropy, range
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \centering
+      \begin{tikzpicture}[scale=0.62]
+        \foreach \x in {0,...,3} \foreach \y in {0,...,3} {
+          \pgfmathsetmacro\s{10+12*(\x+\y)}
+          \fill[accent!\s] (\x,\y) rectangle ++(1,1);
+          \draw[white] (\x,\y) rectangle ++(1,1);
+        }
+        \draw[-{Latex},thick] (0,0) -- (4.4,0);
+        \node[below,font=\scriptsize] at (2.2,-0.05) {bottleneck (structure)};
+        \draw[-{Latex},thick] (0,0) -- (0,4.4) node[above,font=\scriptsize] {task range};
+        \node[font=\scriptsize,accent] at (2.2,-1.0) {colour = best reach};
+      \end{tikzpicture}
+
+      \snote{Deliverable: a \textbf{phase diagram} (sketch, no data)}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% =====================================================================
+\section{Why social graphs}
+
+\begin{frame}{Why social graphs?}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{itemize}
+        \item \textbf{Small world}: most users are 3--6 hops apart
+        \item \textbf{Hubs}: a few accounts have very many links
+        \item So a few hops already reach huge crowds: both failure modes are likely
+        \item Real tasks: content labels, user activity
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.46\textwidth}
+      \begin{alertblock}{A gap in the benchmarks}
+        \begin{itemize}\small
+          \item \textbf{LRGB}: vision, chemistry and quantum-chemistry graphs \snote{(Dwivedi et al.\ 2022)}
+          \item \textbf{ECHO}: synthetic long-diameter graphs and molecules \snote{(Miglior et al., ICLR 2026)}
+          \item \textbf{No social graphs} in either
+        \end{itemize}
+      \end{alertblock}
+      \snote{Older Peptides, river and tree experiments: appendix.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Datasets (SNAP) and real targets}
+  \centering
+  \footnotesize\renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{@{}L{0.14\textwidth}L{0.26\textwidth}L{0.29\textwidth}cc@{}}
+    \toprule
+    Dataset & Graph & Target & Mean deg. & Eff.\ diam. \\
+    \midrule
+    twitch-gamers & 168,114 users, 6.8M mutual follows & \texttt{mature} (explicit content, binary) & 11.6 & 5.8 \\
+    reddit-body & 35,776 subreddits, 124,330 links & \texttt{LIWC\_Money} (regression) & 4.3 & 5.7 \\
+    twitch-de & 9,498 users, 153,138 edges & \texttt{mature} & 22.9 & 3.0 \\
+    higgs-follow & 35,593 users, 528,532 follows & \texttt{active\_after}: active after the Higgs news (4 Jul 2012) & 16.7 & 3.7 \\
+    \bottomrule
+  \end{tabular}
   \vspace{0.6em}
+
+  \raggedright
+  \begin{itemize}\small
+    \item \texttt{activate\_passive}: same Higgs label, scored only on the $\sim$11\% of users with \textbf{no earlier activity}, so any signal must come from neighbours
+    \item reddit target: neighbours add the most (ridge $R^2$ 0.108 own $\to$ 0.185 with 4 hops)
+  \end{itemize}
+  \snote{Degree, diameter: means over test subgraphs. Higgs retweet / reply layers before the cutoff: too sparse (mean degree 1.4 / 0.16).}
+\end{frame}
+
+% =====================================================================
+\section{Measures}
+
+\begin{frame}{Effective resistance collapses to degree}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \[ R(u,v) = (e_u - e_v)^\top L^+ (e_u - e_v) \]
+      \begin{itemize}\small
+        \item Low $R$: many wide paths. High $R$: a bottleneck
+        \item On large, well-connected graphs \snote{(von Luxburg, Radl \& Hein 2014)}:
+          \[ R(u,v) \;\to\; \tfrac{1}{d_u} + \tfrac{1}{d_v} \]
+        \item So $R$ mostly measures \alert{degree}, not bottlenecks
+        \item We use \textbf{excess resistance}
+          \[ R_{\text{ex}}(u,v) = R(u,v) - \big(\tfrac{1}{d_u} + \tfrac{1}{d_v}\big) \]
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.44\textwidth}
+      \centering\small
+      \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Graph & $\rho_S\big(R,\ \tfrac1{d_u}{+}\tfrac1{d_v}\big)$ & mean $R_{\text{ex}}$ \\
+        \midrule
+        twitch-gamers & 0.90 & 0.39 \\
+        reddit & 0.77 & 0.49 \\
+        twitch-de & \alert{0.998} & 0.02 \\
+        higgs-follow & \alert{0.98} & 0.09 \\
+        higgs-retweet & 0.07 & -- \\
+        \bottomrule
+      \end{tabular}
+
+      \snote{$\rho_S$: Spearman correlation, on test subgraphs. Only the very sparse retweet layer escapes the collapse.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Three model measures}
+  \begin{columns}[T]
+    \begin{column}{0.32\textwidth}
+      \textbf{Jacobian sensitivity}
+      \[ J(u,v) = \Big\|\frac{\partial h_v^{(L)}}{\partial h_u^{(0)}}\Big\|_F \]
+      \begin{itemize}\small
+        \item Does $v$'s output move when $u$'s input moves?
+        \item Over-squashing: $J$ \textbf{decays} with hops and resistance
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.32\textwidth}
+      \textbf{Attention entropy}
+      \[ \tilde H = \frac{-\sum_j a_{ij}\log a_{ij}}{\log N} \in [0,1] \]
+      \begin{itemize}\small
+        \item $\tilde H \approx 1$: attention spread evenly over everyone
+        \item High entropy = \textbf{dilution}
+        \item Exact for softmax; implicit rows for Performer
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.32\textwidth}
+      \textbf{Range}
+      \[ \rho_v = \frac{\sum_u I_{vu}\, d(v,u)}{\sum_u I_{vu}} \]
+      \begin{itemize}\small
+        \item How far the trained model listens
+        \item Node level, from the Jacobian \snote{(Bamberger et al.\ 2025)}
+        \item Distance in hops or (excess) resistance
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% =====================================================================
+\section{The knob problem}
+
+\begin{frame}{The hybrid model and its $\alpha$ knob}
+  \[ x' = x + (1-\alpha)\,\mathrm{Norm}\big(\mathrm{MPNN}(x)\big) + \alpha\,\mathrm{Norm}\big(\mathrm{Attn}(x)\big) \]
+  \begin{itemize}
+    \item $\alpha = 0$: pure message passing \quad $\alpha=1$: pure attention \snote{(GraphGPS-like, Rampášek et al.\ 2022)}
+    \item Plan: sweep $\alpha$ and find the best mix per graph and task
+  \end{itemize}
+  \vspace{0.4em}
   \centering
   \begin{tikzpicture}
     \draw[-{Latex},thick,ink!60] (0,0) -- (9,0);
@@ -109,134 +352,425 @@
     \node[above,font=\small,accent] at (4.5,0.05) {hybrids};
     \fill[accent] (4.5,0) circle (2.5pt);
   \end{tikzpicture}
-\end{frame}
-
-\begin{frame}{Research question and hypotheses}
-  \textbf{Question.} Do graph structure (effective resistance) and task range predict where on the local-to-global spectrum (best $\alpha$) a model should sit? Can mechanistic measures explain why?
-  \vspace{0.6em}
-  \begin{description}[H4]
-    \item[H1] At $\alpha=0$, Jacobian sensitivity decays with $R(u,v)$ (negative log-log slope) more steeply than for the transformer; hybrids in between
-    \item[H2] Normalised attention entropy rises with graph size for attention models
-    \item[H3] Peptides-func is short-range (Bamberger et al. 2025), so expect a low best $\alpha$
-    \item[H4] Best $\alpha$ increases with effective resistance and with task range
-  \end{description}
   \vspace{0.4em}
-  \snote{Deliverable: a phase diagram. x = effective resistance, y = task range, colour = best $\alpha$. The transformer's Jacobian slope serves as a size-confound baseline.}
+
+  \raggedright
+  \alert{But}: as built, training could undo $\alpha$. Next slide.
 \end{frame}
 
-\begin{frame}{Gates: checks before any claim}
+\begin{frame}{Why $\alpha$ did nothing: the norms absorb it}
+  BatchNorm has a learnable scale $\gamma$:\quad $\mathrm{Norm}(h) = \gamma\,\hat h + \beta$
+  \[ (1-\alpha)\,\mathrm{Norm}(h_{\text{loc}}) + \alpha\,\mathrm{Norm}(h_{\text{glb}})
+     = \underbrace{(1-\alpha)\gamma_{\text{loc}}}_{\text{learned}}\,\hat h_{\text{loc}}
+     + \underbrace{\alpha\,\gamma_{\text{glb}}}_{\text{learned}}\,\hat h_{\text{glb}} + \dots \]
+  \begin{itemize}
+    \item Training can rescale either branch freely
+    \item Any $\alpha$ strictly between 0 and 1 gives the \textbf{same} model family
+    \item $\alpha$ only changed the \alert{starting point}, not the model
+  \end{itemize}
+  \vspace{0.3em}
+  \begin{exampleblock}{Fix 1: affine-free $\alpha$}
+    Remove the learnable scale from the branch norms (\texttt{branch\_affine=false}). Now $\alpha$ is a real, fixed weight.
+  \end{exampleblock}
+\end{frame}
+
+\begin{frame}{Fix 2: the attention radius $k$}
+  \begin{columns}[c]
+    \begin{column}{0.4\textwidth}
+      \centering
+      \begin{tikzpicture}
+        \fill[accent!8] (0,0) circle (1.9);
+        \fill[accent!18] (0,0) circle (1.25);
+        \fill[accent!32] (0,0) circle (0.6);
+        \foreach \r in {0.6,1.25,1.9} \draw[accent!60] (0,0) circle (\r);
+        \node[circle,fill=warm,inner sep=2.6pt] at (0,0) {};
+        \node[font=\scriptsize] at (0,0.38) {$k{=}1$};
+        \node[font=\scriptsize] at (0,0.95) {$k{=}2$};
+        \node[font=\scriptsize] at (0,1.6) {$k{=}3$};
+        \node[font=\scriptsize,ink!70] at (0,-2.2) {$k=\infty$: the whole graph};
+      \end{tikzpicture}
+    \end{column}
+    \begin{column}{0.58\textwidth}
+      \begin{itemize}
+        \item Attention may only look at nodes \textbf{within $k$ hops}
+        \item $k=0$: pure message passing; $k=\infty$: full attention
+        \item Larger $k$: shortcuts past bottlenecks (\textcolor{good}{less over-squashing})
+        \item \ldots but more nodes per softmax (\alert{more dilution})
+        \item The best $k$ \emph{is} the trade-off we study
+        \item Learned weights \textbf{cannot undo} it
+      \end{itemize}
+      \snote{Related architectures: DRew (Gutteridge et al.\ 2023, $k$-hop rewiring), Shortest Path Networks (Abboud et al.\ 2022), Graphormer's distance bias (Ying et al.\ 2021). Our contribution: the radius as a \emph{diagnostic} knob, read with the measures.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% =====================================================================
+\section{Pipeline}
+
+\begin{frame}{From a SNAP file to a measured model}
+  \centering
+  \begin{tikzpicture}[
+      box/.style={draw=ink!70,fill=soft,rounded corners=2pt,font=\scriptsize,align=center,minimum height=1.0cm,text width=1.9cm},
+      mbox/.style={box,fill=accent!12},
+      arr/.style={-{Latex[length=2mm]},thick,ink!70},
+      node distance=0.42cm]
+    \node[box] (src) {\textbf{SNAP files}\\graph, features,\\timestamps};
+    \node[box,right=of src] (tgt) {\textbf{Target}\\real label\\or planted};
+    \node[box,right=of tgt] (part) {\textbf{METIS parts}\\decide which nodes\\are labelled};
+    \node[box,right=of part] (model) {\textbf{Model}\\MLP, GCN,\\hybrid ($\alpha$ or $k$)};
+    \node[box,right=of model] (train) {\textbf{Train}\\best validation\\checkpoint};
+    \node[mbox,below=0.9cm of train] (meas) {\textbf{Measures}\\Jacobian, entropy,\\range};
+    \node[mbox,left=of meas] (res) {\textbf{Structure}\\degree, diameter,\\excess $R$};
+    \node[box,left=of res,fill=good!12] (ana) {\textbf{Analysis}\\AUROC, CIs,\\phase diagram};
+    \draw[arr] (src)--(tgt); \draw[arr] (tgt)--(part); \draw[arr] (part)--(model); \draw[arr] (model)--(train);
+    \draw[arr] (train)--(meas); \draw[arr] (meas)--(res); \draw[arr] (res)--(ana);
+  \end{tikzpicture}
+  \vspace{0.6em}
+
+  \raggedright
+  \begin{itemize}\small
+    \item \textbf{Subgraph mode} (so far): train and test inside each part
+    \item \textbf{Full-graph mode} (now): parts only pick the labelled nodes; the model sees the \textbf{whole graph}
+    \item \textbf{No leakage} on Higgs: inputs are follow degree and activity counts \emph{before} the cutoff only
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Models and baselines}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \textbf{Baselines}
+      \begin{itemize}\small
+        \item \textbf{MLP}: own features only, no graph
+        \item \textbf{GCN}: plain message passing
+      \end{itemize}
+      \vspace{0.3em}
+      \textbf{Hybrid}
+      \begin{itemize}\small
+        \item Local branch: GCN-normalised message passing \snote{(GINE in the first sweep; its sum was unstable on hubs)}
+        \item Global branch: attention
+        \item Branch norms without learnable scale
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{Three kinds of attention}
+      \begin{itemize}\small
+        \item \textbf{Exact softmax}: small graphs
+        \item \textbf{Performer} (FAVOR+): linear cost, for $k=\infty$ on big graphs \snote{(Choromanski et al.\ 2021)}
+        \item \textbf{Radius-masked softmax}: only pairs within $k$ hops
+      \end{itemize}
+      \vspace{0.3em}
+      \textbf{Metric}: test AUROC (binary targets), mean $\pm$ std over split and model seeds
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Colab notebooks}
   \centering
   \small
-  \begin{tabular}{@{}lL{0.62\textwidth}l@{}}
+  \begin{tabular}{@{}lL{0.55\textwidth}l@{}}
     \toprule
-    Gate & Criterion & Status \\
+    Notebook & What it does & Status \\
     \midrule
-    \textbf{G0} & Rebuilt 4-layer hybrid, $\alpha=0.5$, seed 0: test AP $\ge 0.652$ on Peptides-func. $\alpha=0$ and $\alpha=1$ must also train & \alert{not passed}: 0.6259 \\
-    \addlinespace
-    \textbf{G1} & Training is sound: mean test AP $\alpha=0.5 \ge 0.63$, $\alpha=1 \ge 0.60$, GCN $\ge 0.66$ (or the gap documented) & pending \\
-    \addlinespace
-    \textbf{G2} & Measurements are interpretable: Jacobian slope difference vs $\alpha=1$ with a graph-clustered bootstrap CI & pending \\
+    \texttt{00\_quickstart} & one short run, end-to-end check & \sdone \\
+    \texttt{01\_fetch\_datasets} & download, parse, structure stats (S0) & \sdone \\
+    \texttt{02\_s2\_<dataset>} & first $\alpha$ sweep, one notebook per dataset & \sdone{} (Higgs) \\
+    \texttt{03\_s2\_results} & collect runs into tables and $\alpha$ curves & built \\
+    \texttt{04\_higgs\_affine\_alpha} & affine-free $\alpha$ sweep, 500-node subgraphs & \sdone \\
+    \texttt{05\_higgs\_radius} & radius sweep, 500-node subgraphs & \srun \\
+    \texttt{06\_higgs\_full\_graph} & full-graph $\alpha$ and radius sweeps & \srun \\
+    \texttt{07\_higgs\_planted} & planted long-range targets & \sbuild \\
     \bottomrule
   \end{tabular}
-  \vspace{0.8em}
+  \vspace{0.6em}
 
-  \raggedright\snote{If G1 fails, change one thing at a time on seed 0: training curves, then lr/warmup, then dropout, then BatchNorm vs LayerNorm, then 300 epochs. The first G0 run fell short, so this loop now starts with G0.}
+  \raggedright\snote{Each notebook mounts Drive, clones the repo and resumes: finished runs are skipped, interrupted runs continue from their checkpoint.}
 \end{frame}
 
 % =====================================================================
-\section{Datasets}
+\section{Results so far}
 
-\begin{frame}{Datasets at a glance}
-  \centering
-  \footnotesize
-  \begin{tabular}{@{}L{0.19\textwidth}L{0.19\textwidth}L{0.18\textwidth}L{0.13\textwidth}L{0.17\textwidth}@{}}
-    \toprule
-    Dataset & Graphs & Task & Metric & Role \\
-    \midrule
-    Peptides-func (LRGB) & 15,535 molecules, $\sim$151 nodes & 10-label graph classification & macro AP & main benchmark \\
-    Peptides-struct (LRGB) & same graphs & 11-target regression & MAE & task-range axis (planned) \\
-    Reddit hyperlinks (SNAP) & 1 graph, 35,776 nodes & node regression & rel.\ MSE per hop band & parallel node track \\
-    LamaH-CE rivers & 32 gauge trees, 5--35 nodes & discharge, 1/3/7 days ahead & NRMSE, NSE & real-world tree test \\
-    Synthetic trees & 96 trees, 63/127 nodes & near/far query sum & MSE & controlled test \\
-    synthetic-tiny & 8--30 nodes & Peptides schema & AP & unit tests, smoke runs \\
-    \bottomrule
-  \end{tabular}
-\end{frame}
+\begin{frame}{Higgs, first sweep: nothing beats the MLP}
+  \begin{columns}[c]
+    \begin{column}{0.46\textwidth}
+      \centering\small
+      \begin{tabular}{@{}lc@{}}
+        \toprule
+        Model & Test AUROC \\
+        \midrule
+        MLP (no graph) & \textbf{0.687} $\pm$ 0.000 \\
+        GCN & 0.684 $\pm$ 0.000 \\
+        $\alpha=1$ & 0.677 $\pm$ 0.003 \\
+        $\alpha=0.5$ & 0.669 $\pm$ 0.026 \\
+        $\alpha=0.75$ & 0.666 $\pm$ 0.019 \\
+        $\alpha=0$ & 0.652 $\pm$ 0.034 \\
+        $\alpha=0.25$ & 0.648 $\pm$ 0.003 \\
+        \bottomrule
+      \end{tabular}
 
-\begin{frame}{Peptides-func and Peptides-struct (LRGB)}
-  \begin{columns}[T]
-    \begin{column}{0.55\textwidth}
-      \begin{itemize}
-        \item 15,535 graphs; average $\approx$151 nodes, $\approx$307 edges, diameter $\approx$57 \snote{(Dwivedi et al. 2022)}
-        \item Split $\approx$70/15/15 (10,873 / 2,331 / 2,331)
-        \item Atoms: 9 categorical columns. Bonds: 3 columns. All \emph{embedded}, not passed through Linear
-        \item RWSE positional encoding, 20 steps: $\mathrm{pe}_v = [(D^{-1}A)^k_{vv}]_{k=1}^{20}$
-      \end{itemize}
+      \snote{higgs-follow, \texttt{active\_after}, 2k-node subgraphs, 3 seeds}
     \end{column}
-    \begin{column}{0.42\textwidth}
+    \begin{column}{0.5\textwidth}
       \begin{itemize}
-        \item \textbf{func}: BCE loss, macro AP
-        \item \textbf{struct}: L1 loss, MAE (Phase 4)
-        \item Same graphs, different task: a test of whether range depends on the task
-        \item \alert{Caveat:} the graphs are near-trees, so $R \approx$ hops. ``Resistance beats hops'' cannot be shown here
+        \item Setup: GINE local branch, Performer attention, \alert{flawed $\alpha$} (learnable norm scales)
+        \item The graph adds nothing over own features
+        \item GINE's sum aggregation was \textbf{unstable on hubs}
+        \item[$\Rightarrow$] Fix the knob (affine-free), switch to a GCN-normalised local branch
       \end{itemize}
     \end{column}
   \end{columns}
 \end{frame}
 
-\begin{frame}{Reddit, rivers and synthetic trees}
+\begin{frame}{Higgs, affine-free $\alpha$: still no gain over the MLP}
+  \begin{columns}[c]
+    \begin{column}{0.64\textwidth}
+      \centering
+      \begin{tikzpicture}
+      \begin{groupplot}[group style={group size=2 by 1, horizontal sep=1.0cm},
+          width=0.56\textwidth, height=4.6cm, xlabel={$\alpha$}, xmin=-0.1, xmax=1.1,
+          xtick={0,0.25,0.5,0.75,1}, xticklabels={0,.25,.5,.75,1},
+          tick label style={font=\tiny}, label style={font=\scriptsize}, title style={font=\scriptsize},
+          yticklabel style={/pgf/number format/fixed,/pgf/number format/precision=2},
+          grid=major, grid style={gray!25}]
+      \nextgroupplot[title={\texttt{active\_after}}, ylabel={Test AUROC}, ymin=0.675, ymax=0.725]
+      \addplot[thick, color=accent, mark=*, mark size=1.2pt, error bars/.cd, y dir=both, y explicit]
+        coordinates {(0,0.697)+-(0,0.003) (0.25,0.691)+-(0,0.007) (0.5,0.696)+-(0,0.003) (0.75,0.700)+-(0,0.005) (1,0.698)+-(0,0.007)};
+      \addplot[thick, dashed, color=good, domain=-0.1:1.1, samples=2] {0.710};
+      \addplot[thick, densely dotted, color=warm, domain=-0.1:1.1, samples=2] {0.706};
+      \nextgroupplot[title={\texttt{activate\_passive}}, ymin=0.595, ymax=0.685,
+          legend style={font=\tiny, at={(0.98,0.03)}, anchor=south east}]
+      \addplot[thick, color=accent, mark=*, mark size=1.2pt, error bars/.cd, y dir=both, y explicit]
+        coordinates {(0,0.663)+-(0,0.012) (0.25,0.642)+-(0,0.020) (0.5,0.650)+-(0,0.015) (0.75,0.651)+-(0,0.010) (1,0.653)+-(0,0.012)};
+      \addlegendentry{hybrid $\alpha$}
+      \addplot[thick, dashed, color=good, domain=-0.1:1.1, samples=2] {0.664};
+      \addlegendentry{MLP}
+      \addplot[thick, densely dotted, color=warm, domain=-0.1:1.1, samples=2] {0.661};
+      \addlegendentry{GCN}
+      \end{groupplot}
+      \end{tikzpicture}
+
+      \snote{Mean $\pm$ std, 3 split seeds $\times$ 2 model seeds. \texttt{active\_after} $\alpha=0, .25, .5$: 4 of 6 runs (Drive error).}
+    \end{column}
+    \begin{column}{0.34\textwidth}
+      \begin{itemize}\small
+        \item Notebook 04: 500-node subgraphs, exact softmax attention
+        \item MLP 0.710 / 0.664; GCN 0.706 / 0.661
+        \item Hybrids: 0.691--0.700 / 0.642--0.663
+        \item \alert{No graph model beat the MLP}, on either target
+        \item $\alpha$ barely matters
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Diagnosis: cutting the graph removed the signal}
+  \centering\small
+  \begin{tabular}{@{}cccccc@{}}
+    \toprule
+    Part size & Edges kept & Users & Own only & + neighbours (full) & + neighbours (in part) \\
+    \midrule
+    500 & 32\% & all & 0.672 & \textbf{0.690} & 0.673 \\
+    500 & 32\% & passive & 0.677 & \textbf{0.705} & 0.690 \\
+    2000 & 47\% & all & 0.694 & \textbf{0.707} & 0.700 \\
+    \bottomrule
+  \end{tabular}
+
+  \snote{Logistic regression on own features + 1- and 2-hop neighbour averages, split by METIS part; test AUROC.}
+  \vspace{0.4em}
+  \raggedright
+  \begin{itemize}\small
+    \item There \emph{is} a neighbour signal: real but modest, larger for passive users
+    \item Inside 500-node parts only 32\% of edges survive, and most of the signal goes with them
+  \end{itemize}
+  \begin{exampleblock}{Takeaway}
+    On small-world social graphs, subgraph training throws away the edges the models need. So: \textbf{train on the full graph}.
+  \end{exampleblock}
+\end{frame}
+
+% =====================================================================
+\section{Running now}
+
+\begin{frame}{Full-graph sweeps on Higgs \srun}
   \begin{columns}[T]
-    \begin{column}{0.33\textwidth}
-      \textbf{Reddit (SNAP)} \snote{(Kumar et al. 2018)}
+    \begin{column}{0.5\textwidth}
+      \textbf{Design}
       \begin{itemize}\small
-        \item Subreddits; 286,561 body hyperlinks, used undirected
-        \item 86 averaged post features
-        \item \textbf{Distance split} by BFS from an anchor: train 0--1 hops, val 2, test 3+
-        \item \textbf{Random control}: same sizes
+        \item Whole 35.6k-node graph for message passing and attention; parts only pick labelled nodes
+        \item \textbf{$\alpha$ sweep}: $\alpha \in \{0, .25, .5, .75, 1\}$, affine-free, Performer
+        \item \textbf{Radius sweep}: $k \in \{0, 1, \infty\}$ \snote{($k=2$: 299M pairs, does not fit)}
+        \item + MLP, GCN; both targets; 3 split $\times$ 2 model seeds
+        \item Also running: radius sweep on 500-node subgraphs (expected to share the subgraph problem)
       \end{itemize}
     \end{column}
-    \begin{column}{0.33\textwidth}
-      \textbf{LamaH-CE rivers} \snote{(Klingler et al. 2021)}
+    \begin{column}{0.46\textwidth}
+      \textbf{What would support the thesis}
       \begin{itemize}\small
-        \item Upstream gauge trees, depth 1--8
-        \item 27 development and 5 held-out outlets
-        \item Inputs: weather, or weather + flow
-        \item Splits by time: 1981--99 / 2000--05 / 2006--17
+        \item Graph models \textbf{beat the MLP} once the edges are back
+        \item The gain is larger on \texttt{activate\_passive}
+        \item The best $k$ is \textbf{between} 0 and $\infty$, and entropy rises with $k$
+      \end{itemize}
+      \pending{Full-graph $\alpha$ and radius sweeps.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Planted targets: a known range on a real graph \sbuild}
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \begin{itemize}\small
+        \item Keep the real graph and features; \textbf{plant} a signal $z_u$ with known range $k$
+        \item \texttt{shell\_mean($k$)}: predict the mean of $z_u$ over nodes \emph{exactly} $k$ hops away \snote{(sanity)}
+        \item \texttt{retrieve($k$)}: fetch the value of the node $k$ hops away whose key matches your query \snote{(main test)}
+        \item Higgs, $k = 1$--3; MLP, GCN, MPNN, attention, hybrid, radius 1 \snote{($k=4$: 97\% of graph in reach)}
+      \end{itemize}
+      \snote{Caveat: small world (effective diameter $\approx$3.7, mean degree $\approx$30), so $k \ge 3$ is close to the whole graph.}
+    \end{column}
+    \begin{column}{0.44\textwidth}
+      \textbf{What would support the thesis}
+      \begin{itemize}\small
+        \item Measured range \textbf{tracks} planted $k$ (validates the measure)
+        \item The best radius \textbf{grows with} $k$
+        \item MP fails \texttt{retrieve} at large $k$; full attention loses to dilution
+      \end{itemize}
+      \pending{Planted-target sweep (S3).}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% =====================================================================
+\section{Roadmap}
+
+\begin{frame}{Roadmap}
+  \centering\small
+  \begin{tabular}{@{}lL{0.6\textwidth}l@{}}
+    \toprule
+    Phase & What & Status \\
+    \midrule
+    S0 & Social data, subgraphs, structure stats (excess resistance) & \sdone \\
+    S1 & Performer attention + node-level models & \sdone \\
+    S2 & Sweeps on real targets (now on the full graph) & \srun \\
+    S3 & Planted targets with known range $k$ & \sbuild \\
+    S4 & Phase diagram: structure $\times$ task range $\to$ best setting & \splan \\
+    S5 & Graph foundation model (GFM) benchmark & \splan \\
+    S6 & Benchmark release and final writeup & \splan \\
+    \bottomrule
+  \end{tabular}
+  \vspace{0.6em}
+
+  \raggedright\snote{Cut order if time is short: GraphAny, then Higgs multilayer analysis, then packaging polish. S1--S4 are never cut.}
+\end{frame}
+
+\begin{frame}{Where it leads: phase diagram, GFMs, benchmark}
+  \begin{columns}[T]
+    \begin{column}{0.32\textwidth}
+      \textbf{S4 Phase diagram}
+      \begin{itemize}\small
+        \item x: excess resistance
+        \item y: task range (planted $k$)
+        \item Colour: best $\alpha$ / radius
+        \item Overlay: attention entropy
       \end{itemize}
     \end{column}
-    \begin{column}{0.33\textwidth}
-      \textbf{Synthetic trees (v1)}
+    \begin{column}{0.34\textwidth}
+      \textbf{S5 Do GFMs reach far enough?}
       \begin{itemize}\small
-        \item $N\in\{63,127\}$, depth $\in\{4,8\}$
-        \item Early, uniform or late growth profiles
-        \item 4 nodes marked at 1 hop, 4 at 4 hops; the root query picks near or far
-        \item Reference MSE: oracle 0, topology-blind 0.5
+        \item Fixed-backbone GFMs \textbf{under-reach} when task range differs from training \snote{(Gutteridge, Bronstein \& Dong 2026; MP only)}
+        \item Test \textbf{GraphPFN} \snote{(Eremeev et al., ICML 2026)}, maybe GraphAny, on planted tasks; measure their range
+        \item NodeGround: tuned GNNs still beat GFMs; no long-range analysis
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.3\textwidth}
+      \textbf{S6 Benchmark}
+      \begin{itemize}\small
+        \item First long-range benchmark on \textbf{social} graphs
+        \item Released as generator code + node indices + seeds
+        \item Rebuilt from public SNAP files
       \end{itemize}
     \end{column}
   \end{columns}
 \end{frame}
 
 % =====================================================================
-\section{Replicating over-squashing and attention dilution}
+\section*{Summary}
 
-\begin{frame}{What has been verified so far}
-  \centering
-  \footnotesize
-  \begin{tabular}{@{}lll@{}}
-    \toprule
-    Experiment & Purpose & Status \\
-    \midrule
-    R1 Pilot LRGB replication & GCN / GPS vs published numbers & done \pilot, 1 seed \\
-    R2 Pilot mechanistic notebook & Jacobian vs $R$, entropy vs size & done, \alert{flawed setup} \\
-    R3 Pilot Reddit & virtual node helps far nodes & done \pilot, unfair baseline \\
-    Unit tests & analytic sanity of all measures & \textcolor{good}{125 passed (CPU)} \\
-    Demos 1--3 & mechanisms on real model code & \illus \\
-    Synthetic tree sweep v1 & MP vs hybrid vs attention & done, confounded \\
-    \midrule
-    G0 calibration (Colab T4) & rebuilt hybrid vs 0.652 AP & run once, \alert{0.6259 (below)} \\
-    Phase 2 sweep / real Reddit & re-baseline and measure & \alert{not run} \\
-    \bottomrule
-  \end{tabular}
+\begin{frame}{Takeaways}
+  \begin{itemize}
+    \item GNNs pass messages hop by hop: far information is \textbf{squashed}; attention reaches far but \textbf{dilutes}
+    \item Social graphs are small-world with hubs, and no long-range benchmark covers them
+    \item Resistance collapses to degree there, so we use \textbf{excess resistance}
+    \item The $\alpha$ knob could be undone by the norms: fixed (affine-free) and joined by the \textbf{attention radius $k$}
+    \item On Higgs, no graph model beat the MLP yet: \alert{subgraph cuts removed most of the neighbour signal}
+    \item Now: full-graph sweeps and planted targets with known range; then the phase diagram, GFMs and a benchmark
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[allowframebreaks]{References}
+  \scriptsize
+  \begin{itemize}
+    \item U.~Alon, E.~Yahav. On the Bottleneck of Graph Neural Networks and its Practical Implications. \emph{ICLR}, 2021.
+    \item J.~Topping, F.~Di Giovanni, B.~P.~Chamberlain, X.~Dong, M.~M.~Bronstein. Understanding Over-Squashing and Bottlenecks on Graphs via Curvature. \emph{ICLR}, 2022.
+    \item F.~Di Giovanni, L.~Giusti, F.~Barbero, G.~Luise, P.~Liò, M.~M.~Bronstein. On Over-Squashing in Message Passing Neural Networks: The Impact of Width, Depth, and Topology. \emph{ICML}, 2023.
+    \item M.~Black, Z.~Wan, A.~Nayyeri, Y.~Wang. Understanding Oversquashing in GNNs through the Lens of Effective Resistance. \emph{ICML}, 2023.
+    \item U.~von Luxburg, A.~Radl, M.~Hein. Hitting and Commute Times in Large Random Neighborhood Graphs. \emph{JMLR}, 15, 2014.
+    \item J.~Bamberger, B.~Gutteridge, et al. On Measuring Long-Range Interactions in Graph Neural Networks. \emph{ICML}, 2025.
+    \item L.~Rampášek, M.~Galkin, V.~P.~Dwivedi, A.~T.~Luu, G.~Wolf, D.~Beaini. Recipe for a General, Powerful, Scalable Graph Transformer. \emph{NeurIPS}, 2022.
+    \item K.~Choromanski et al. Rethinking Attention with Performers. \emph{ICLR}, 2021.
+    \item B.~Gutteridge, X.~Dong, M.~M.~Bronstein, F.~Di Giovanni. DRew: Dynamically Rewired Message Passing with Delay. \emph{ICML}, 2023.
+    \item R.~Abboud, R.~Dimitrov, İ.~İ.~Ceylan. Shortest Path Networks for Graph Property Prediction. \emph{LoG}, 2022.
+    \item C.~Ying et al. Do Transformers Really Perform Bad for Graph Representation? \emph{NeurIPS}, 2021.
+    \item V.~P.~Dwivedi et al. Long Range Graph Benchmark. \emph{NeurIPS Datasets and Benchmarks}, 2022.
+    \item L.~Miglior, M.~Tolloso, A.~Gravina, D.~Bacciu. Can You Hear Me Now? A Benchmark for Long-Range Graph Propagation. \emph{ICLR}, 2026. arXiv 2512.17762.
+    \item B.~Gutteridge, M.~M.~Bronstein, X.~Dong. Can Graph Foundation Models Generalize Over Architecture? \emph{GRaM Workshop, ICLR}, 2026. arXiv 2603.22984.
+    \item D.~Eremeev et al. GraphPFN. \emph{ICML}, 2026. arXiv 2509.21489.
+    \item J.~Lee, D.~Lee, M.~Jeong, J.~Yoo. NodeGround: A Node Classification Benchmark in the Graph Foundation Model Era. arXiv 2609.39673, 2026.
+    \item J.~Tönshoff, M.~Ritzert, E.~Rosenbluth, M.~Grohe. Where Did the Gap Go? Reassessing the Long-Range Graph Benchmark. \emph{TMLR}, 2024.
+    \item S.~Kumar, W.~L.~Hamilton, J.~Leskovec, D.~Jurafsky. Community Interaction and Conflict on the Web. \emph{WWW}, 2018.
+    \item M.~De Domenico, A.~Lima, P.~Mougel, M.~Musolesi. The Anatomy of a Scientific Rumor. \emph{Scientific Reports}, 3, 2013.
+    \item B.~Rozemberczki, R.~Sarkar. Twitch Gamers: a Dataset for Evaluating Proximity Preserving and Structural Role-based Node Embeddings. arXiv 2101.03091, 2021.
+    \item B.~Rozemberczki, C.~Allen, R.~Sarkar. Multi-Scale Attributed Node Embedding. \emph{Journal of Complex Networks}, 9(2), 2021.
+    \item C.~Klingler, K.~Schulz, M.~Herrnegger. LamaH-CE: LArge-SaMple DAta for Hydrology and Environmental Sciences for Central Europe. \emph{Earth System Science Data}, 13, 2021.
+  \end{itemize}
+\end{frame}
+
+% =====================================================================
+% APPENDIX: background experiments
+% =====================================================================
+\appendix
+
+\begin{frame}{Appendix: background experiments}
+  \begin{itemize}
+    \item Earlier work, before the move to social graphs. Kept as background
+    \item \textbf{Peptides-func} (LRGB molecules): pilot replication, rebuilt-hybrid calibration (G0)
+    \item \textbf{Reddit pilot}: virtual node vs SAGE by hop band
+    \item \textbf{Untrained demos}: the measures behave as theory predicts
+    \item \textbf{Synthetic trees}: message passing fails a 4-hop query
+    \item \textbf{LamaH-CE rivers}: does upstream growth predict the hybrid's gain?
+  \end{itemize}
+  \snote{These used the old $\alpha$-blend (with learnable norm scales), so their $\alpha$ curves inherit the knob problem.}
+\end{frame}
+
+\section{Peptides-func}
+
+\begin{frame}{Peptides-func: data and the old plan}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      \begin{itemize}\small
+        \item 15,535 molecules; $\approx$151 nodes, diameter $\approx$57 \snote{(Dwivedi et al.\ 2022)}
+        \item 10-label graph classification, macro AP
+        \item RWSE positional encoding (20 steps)
+        \item Near-trees, so $R \approx$ hops: ``resistance beats hops'' cannot be shown here
+        \item Bamberger et al.\ find it short-range
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.46\textwidth}
+      \textbf{Gate G0}
+      \begin{itemize}\small
+        \item Rebuilt 4-layer hybrid, $\alpha=0.5$, seed 0
+        \item Must reach test AP $\ge 0.652$ (the pilot GPS value)
+        \item Result: \alert{0.6259}, not passed
+        \item No further Peptides GPU work
+      \end{itemize}
+    \end{column}
+  \end{columns}
 \end{frame}
 
 \begin{frame}{Pilot LRGB replication on Peptides-func \pilot}
@@ -255,9 +789,8 @@
     \begin{column}{0.46\textwidth}
       \begin{itemize}
         \item RWSE, 200 epochs (patience 40), 1 seed
-        \item GPS: 4 layers, width 96 (386,246 params). GCN: 6 layers, width 240, BatchNorm (412,790 params)
         \item \textcolor{good}{GPS reproduces} the published value
-        \item GCN is 0.06 short of Tönshoff et al.'s tuned value, so this is only a \alert{partial} replication
+        \item GCN is 0.06 short of Tönshoff et al.'s tuned value: a \alert{partial} replication
         \item G0's 0.652 threshold comes from this GPS run
       \end{itemize}
     \end{column}
@@ -292,13 +825,55 @@
           \item 30 epochs, 1 seed; the attention models did not train
           \item Atom codes passed through \texttt{nn.Linear}; no positional encoding
           \item Entropy computed on head-averaged attention
-          \item Shared LayerNorm; sum pooling
         \end{itemize}
-        Nine bugs were fixed in Phase 1 (\texttt{gnn\_mech})
+        Nine bugs were fixed afterwards in \texttt{gnn\_mech}
       \end{alertblock}
     \end{column}
   \end{columns}
 \end{frame}
+
+\begin{frame}{Gate G0 calibration on Colab: \alert{below threshold}}
+  \begin{columns}[c]
+    \begin{column}{0.6\textwidth}
+      \centering
+      \begin{tikzpicture}
+      \begin{groupplot}[group style={group size=2 by 1, horizontal sep=0.95cm},
+          width=0.53\textwidth, height=4.2cm, xlabel={Epoch}, xmin=25, xmax=190,
+          tick label style={font=\tiny}, label style={font=\scriptsize},
+          grid=major, grid style={gray!25}]
+      \nextgroupplot[ylabel={Training loss}, ymin=0, ymax=0.16]
+      \addplot[thick, color=ink, mark=*, mark size=0.9pt] coordinates {
+       (30,0.1519) (40,0.1180) (50,0.0871) (60,0.0693) (70,0.0516) (80,0.0442) (90,0.0369)
+       (100,0.0309) (110,0.0253) (120,0.0220) (130,0.0189) (140,0.0155) (150,0.0131)
+       (160,0.0115) (170,0.0099) (180,0.0092) (182,0.0092)};
+      \nextgroupplot[ylabel={AP}, ymin=0.50, ymax=0.67,
+          legend style={font=\tiny, at={(0.98,0.03)}, anchor=south east}]
+      \addplot[thick, color=accent, mark=*, mark size=0.9pt] coordinates {
+       (30,0.5475) (40,0.5071) (50,0.5820) (60,0.5843) (70,0.6027) (80,0.5989) (90,0.5885)
+       (100,0.6097) (110,0.6151) (120,0.6069) (130,0.6126) (140,0.6126) (150,0.6261)
+       (160,0.6262) (170,0.6196) (180,0.6197) (182,0.6225)};
+      \addlegendentry{Val AP}
+      \addplot[thick, dashed, color=good] coordinates {
+       (30,0.5716) (50,0.6126) (90,0.6230) (130,0.6183) (150,0.6259) (182,0.6259)};
+      \addlegendentry{Test AP at best val}
+      \addplot[thin, densely dotted, color=warm, domain=25:190] {0.652};
+      \addlegendentry{G0 (0.652)}
+      \end{groupplot}
+      \end{tikzpicture}
+
+      \snote{\texttt{pilot\_equivalence.yaml}: 4 layers, $\alpha=0.5$, seed 0, 404,654 params, T4, $\approx$19\,s/epoch}
+    \end{column}
+    \begin{column}{0.38\textwidth}
+      \begin{itemize}\small
+        \item Best val AP 0.6281 at epoch 142 (stopped at 182); \textbf{test AP 0.6259}, 0.026 short of 0.652
+        \item Loss keeps falling to 0.009 while val AP plateaus near 0.62 from epoch 90: \alert{overfitting}
+        \item Measurements not saved: the Hessian graph range ran out of memory on the T4
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\section{Reddit pilot and demos}
 
 \begin{frame}{Pilot Reddit: virtual node vs SAGE by hop band \pilot}
   \begin{columns}[c]
@@ -316,18 +891,17 @@
         \bottomrule
       \end{tabular}
 
-      \snote{Mean test MSE over 100 seeds (raw units)}
+      \snote{Mean test MSE over 100 seeds (raw units). Distance split by BFS from an anchor.}
     \end{column}
     \begin{column}{0.44\textwidth}
       \begin{itemize}
-        \item The gain from a global shortcut grows with distance
+        \item The gain from a global shortcut (virtual node) grows with distance
         \item \alert{Caveats}
           \begin{itemize}\small
             \item Only VMN had an input projection (unfair baseline)
             \item The target (character count) is almost a function of the node's own features
-            \item The distance split confounds ``far'' with ``out of distribution''
+            \item ``Far'' is confounded with ``out of distribution''
           \end{itemize}
-        \item Phase 2 fixes all three
       \end{itemize}
     \end{column}
   \end{columns}
@@ -365,10 +939,12 @@
   \raggedright
   \begin{itemize}
     \item The node-level range respects the receptive field and grows once attention is mixed in
-    \item The Hessian range reaches $\approx$18 hops, far past GCN's 6-hop reach: mean pooling plus a nonlinear head couples all pairs
+    \item The Hessian range reaches $\approx$18 hops, far past GCN's 6-hop reach: pooling plus a nonlinear head couples all pairs
     \item[$\Rightarrow$] Models are compared using the \textbf{node-level} range
   \end{itemize}
 \end{frame}
+
+\section{Synthetic trees}
 
 \begin{frame}{Synthetic tree sweep v1: MP fails the 4-hop query}
   \begin{columns}[c]
@@ -386,253 +962,27 @@
         \bottomrule
       \end{tabular}
 
-      \snote{Test MSE; predicting zero gives 1. 21 fits, about 49 min.}
+      \snote{Test MSE; predicting zero gives 1. Trees of 63/127 nodes; 4 marked nodes at 1 hop, 4 at 4 hops; the root query picks near or far.}
     \end{column}
     \begin{column}{0.46\textwidth}
       \begin{itemize}
         \item MP solves the 1-hop query but fails the 4-hop one, though 4 hops lie inside its 8-layer reach
-        \item Every hybrid beats pure attention
-        \item \alert{Confounded}: different target draws, mean aggregation for a sum target, attention-only hop bias, LayerNorm, unequal parameter counts
-        \item Not re-verified here (archive missing)
+        \item Every hybrid solves it, and beats pure attention
+        \item \alert{Confounded}: different target draws, mean aggregation for a sum target, attention-only hop bias, unequal parameter counts
       \end{itemize}
     \end{column}
   \end{columns}
 \end{frame}
 
-% =====================================================================
-\section{The pipeline and models}
-
-\begin{frame}{End-to-end pipeline (\texttt{gnn\_mech})}
-  \centering
-  \begin{tikzpicture}[
-      box/.style={draw=ink!70,fill=soft,rounded corners=2pt,font=\scriptsize,align=center,minimum height=0.95cm,text width=1.85cm},
-      mbox/.style={box,fill=accent!12,text width=1.75cm},
-      arr/.style={-{Latex[length=2mm]},thick,ink!70},
-      node distance=0.38cm]
-    \node[box] (cfg) {\textbf{Config}\\YAML + CLI\\hash $\to$ RunDir};
-    \node[box,right=of cfg] (data) {\textbf{Data}\\Peptides-func\\+ RWSE(20)};
-    \node[box,right=of data] (enc) {\textbf{Encoder}\\$h_0=\sum\mathrm{Emb}+W\mathrm{pe}$};
-    \node[box,right=of enc] (model) {\textbf{Model}\\$L\times$Hybrid($\alpha$)\\or GCN};
-    \node[box,right=of model] (train) {\textbf{Train}\\AdamW, warmup\\+ cosine, best val};
-    \node[box,below=0.9cm of train] (pred) {\textbf{Predictions}\\preds\_val/test};
-    \node[mbox,left=of pred] (jac) {Jacobian sweeps\\+ node range};
-    \node[mbox,left=of jac] (ent) {Per-head\\entropy};
-    \node[mbox,left=of ent] (hes) {Hessian\\graph range};
-    \node[box,left=of hes,fill=good!12] (ana) {\textbf{Analysis}\\tables, bootstrap\\CIs, figures};
-    \draw[arr] (cfg) -- (data); \draw[arr] (data) -- (enc); \draw[arr] (enc) -- (model); \draw[arr] (model) -- (train);
-    \draw[arr] (train) -- (pred);
-    \draw[arr] (pred) -- (jac); \draw[arr] (jac) -- (ent); \draw[arr] (ent) -- (hes); \draw[arr] (hes) -- (ana);
-    \begin{scope}[on background layer]
-      \node[draw=accent,dashed,thick,rounded corners=5pt,fit=(cfg)(train)(pred)(hes),inner sep=7pt,
-            label={[font=\scriptsize\bfseries,accent]above:Sweep runner: $\alpha\in\{0,0.5,1\}$ + GCN $\times$ seeds $\{0,1,2\}$; skips finished runs, resumes interrupted ones}] (sweep) {};
-    \end{scope}
-    \node[below=0.25cm of ana,font=\scriptsize,warm] {$\to$ gates G1/G2 $\to$ phase diagram};
-  \end{tikzpicture}
-  \vspace{0.3em}
-
-  \snote{Outputs per run: \texttt{metrics.json}, \texttt{measurements.json}, \texttt{best.pt}, \texttt{history.json}. All measures run on the best-validation checkpoint in eval mode.}
-\end{frame}
-
-\begin{frame}{HybridLayer, exactly as implemented}
-  \small
-  \begin{align*}
-    h_{\text{loc}} &= \mathrm{BN}_{\text{loc}}\big(\mathrm{GINE}(x, E, e)\big), \qquad
-    h_{\text{glb}} = \mathrm{BN}_{\text{glb}}\big(\mathrm{MHA}(x)\big) \\
-    x' &= x + \mathrm{Dropout}\big((1-\alpha)\,h_{\text{loc}} + \alpha\,h_{\text{glb}}\big) \\
-    x'' &= \mathrm{BN}_{\text{ffn}}\big(x' + \mathrm{FFN}(x')\big), \qquad \mathrm{FFN} = \mathrm{Lin}(d\!\to\!2d)\,\text{ReLU}\,\text{Dropout}\,\mathrm{Lin}(2d\!\to\!d)
-  \end{align*}
-  \begin{columns}[T]
-    \begin{column}{0.5\textwidth}
-      \textbf{GINE branch}
-      \[ \mathrm{GINE}(x)_v = \mathrm{MLP}\Big((1+\epsilon)x_v + \!\!\!\sum_{u\in\mathcal N(v)}\!\!\!\mathrm{ReLU}(x_u + e_{uv})\Big) \]
-      \snote{Learnable $\epsilon$; edge embeddings already have width $d$}
-    \end{column}
-    \begin{column}{0.46\textwidth}
-      \textbf{MHA branch}
-      \begin{itemize}\small
-        \item Dense attention \emph{within} each graph, with a padding mask
-        \item 4 heads, $\mathrm{softmax}(QK^\top/\sqrt{d_h})V$, attention dropout 0.1
-        \item $\alpha=0$: MHA not built; $\alpha=1$: GINE not built
-      \end{itemize}
-    \end{column}
-  \end{columns}
-  \snote{Model: InputEncoder $\to L\times$ HybridLayer $\to$ mean pool $\to$ MLP head $\to$ 10 logits. All norms are BatchNorm, as in GraphGPS.}
-\end{frame}
-
-\begin{frame}{Baselines: GCN (Tönshoff-aligned) and the Reddit models}
-  \begin{columns}[T]
-    \begin{column}{0.5\textwidth}
-      \textbf{GCN} \snote{(Tönshoff et al. 2024)}
-      \[ x \leftarrow x + \mathrm{Dropout}\big(\mathrm{GELU}(\tilde D^{-1/2}\tilde A\tilde D^{-1/2} x W)\big) \]
-      \begin{itemize}\small
-        \item 6 layers, hidden 235, no per-layer norm, 3-layer head
-        \item 250 epochs, batch 200, RWSE 20; ignores edge features
-        \item Target $\approx$0.686 AP; remaining difference: how RWSE is injected
-      \end{itemize}
-    \end{column}
-    \begin{column}{0.46\textwidth}
-      \textbf{Reddit node regression}
-      \begin{itemize}\small
-        \item \textbf{SAGE}: Linear(in$\to$64) $\to$ 3$\times$SAGEConv
-          \[ h_v' = W_1 h_v + W_2\,\mathrm{mean}_{u\in\mathcal N(v)} h_u \]
-        \item \textbf{VMN}: the same network plus one master node linked to every node, so all pairs are within 2 hops
-        \item VMN is the node-task analogue of $\alpha\to1$
-        \item Fix: both models now have the input projection; 30 seeds each
-      \end{itemize}
-    \end{column}
-  \end{columns}
-\end{frame}
-
-\begin{frame}{Model sizes and the $\alpha$ grid}
-  \begin{columns}[c]
-    \begin{column}{0.6\textwidth}
-      \centering\footnotesize
-      \begin{tabular}{@{}lcccr@{}}
-        \toprule
-        Config & hidden & $L$ & heads & params \\
-        \midrule
-        Hybrid $\alpha=0$ (GINE) & 96 & 5 & 4 & 311,055 \\
-        Hybrid $\alpha=0.5$ (GPS-like) & 96 & 5 & 4 & 498,255 \\
-        Hybrid $\alpha=1$ (transformer) & 96 & 5 & 4 & 404,170 \\
-        GCN (Tönshoff) & 235 & 6 & -- & 491,865 \\
-        G0 pilot-equivalence $\alpha=0.5$ & 96 & 4 & 4 & 404,654 \\
-        \bottomrule
-      \end{tabular}
-
-      \snote{LRGB budget is 500k. Training: 200 epochs, batch 128, AdamW lr $10^{-3}$, 5 warmup epochs.}
-    \end{column}
-    \begin{column}{0.36\textwidth}
-      \begin{itemize}
-        \item \textbf{Phase 2}: $\alpha\in\{0, 0.5, 1\}$ + GCN, 3 seeds (12 runs)
-        \item \textbf{Phase 3}: $\alpha\in\{0, .25, .5, .75, 1\}$, 3 seeds
-        \item \textbf{Rivers}: $\alpha\in\{0, .25, .5, .75, 1\}$
-        \item \alert{Confound}: parameter count changes with $\alpha$ because unused branches are not built
-      \end{itemize}
-    \end{column}
-  \end{columns}
-\end{frame}
-
-% =====================================================================
-\section{Measures}
-
-\begin{frame}{Effective resistance and Jacobian sensitivity}
-  \begin{columns}[T]
-    \begin{column}{0.47\textwidth}
-      \textbf{Effective resistance}
-      \[ R(u,v) = (e_u - e_v)^\top L^+ (e_u - e_v) \]
-      \begin{itemize}\small
-        \item $L = D - A$; $L^+ = (L + \tfrac1n J)^{-1}$ on the largest connected component
-        \item Graph level: mean of $R$ over all pairs
-        \item Tests: path $\Rightarrow R=$ hops; complete graph $\Rightarrow R=2/n$
-      \end{itemize}
-    \end{column}
-    \begin{column}{0.5\textwidth}
-      \textbf{Jacobian sensitivity}
-      \[ J(u,v) = \Big\|\frac{\partial h_v^{(L)}}{\partial h_u^{(0)}}\Big\|_F \]
-      \begin{itemize}\small
-        \item Taken w.r.t.\ the embedded input $h_0$
-        \item 200 graphs $\times$ 4 targets $\times$ 32 sources, stratified by $R$
-        \item Slope $b$: $\log_{10} J = a + b\log_{10} R$ (also vs hops; size-controlled with $+\beta_N\log_{10} n$)
-        \item G2: $\Delta b = b_\alpha - b_{\alpha=1}$, \textbf{graph-clustered bootstrap} (resample graphs, 1000 reps)
-        \item One batched backward per target: $\approx$30$\times$ speedup
-      \end{itemize}
-    \end{column}
-  \end{columns}
-\end{frame}
-
-\begin{frame}{Per-head attention entropy (dilution)}
-  For layer $\ell$, head $h$, graph with $N$ nodes and attention $a_{ij}$:
-  \[ H_{\ell,h} = \frac1N\sum_{i=1}^{N}\Big(-\sum_{j=1}^{N} a^{(\ell,h)}_{ij}\log a^{(\ell,h)}_{ij}\Big),\qquad
-     \tilde H_{\ell,h} = \frac{H_{\ell,h}}{\log N}\in[0,1] \]
-  \begin{itemize}
-    \item Computed \textbf{per head}; averaging heads first inflates entropy (a pilot bug)
-    \item Uniform attention $\Rightarrow \tilde H = 1$ (unit-tested)
-    \item 500 graphs: Pearson $r(N, H)$, $r(N, \tilde H)$, per-layer means, graph-bootstrap CIs
-    \item Undefined for $\alpha=0$
-  \end{itemize}
-  \begin{block}{$\alpha$ as the interpolation knob}
-    \small $\alpha=0$: receptive field of $L$ hops (over-squashing regime). $\alpha>0$: every pair connected in one layer (dilution regime).
-    Jacobian slope, entropy, range and AP are all reported \emph{as functions of $\alpha$}; best $\alpha$ per resistance bin $\to$ phase diagram.
-  \end{block}
-\end{frame}
-
-\begin{frame}{Range measure (Bamberger et al., ICML 2025)}
-  \begin{columns}[T]
-    \begin{column}{0.54\textwidth}
-      \small
-      Implemented following Gutteridge's \texttt{range-measure} repository.
-      \begin{align*}
-        \text{node: } I_{vu} &= \textstyle\sum_{k,d}\big|\partial y_{v,k}/\partial x_{u,d}\big| \\
-        \text{graph: } I_{uw} &= \textstyle\sum_{k,d,d'}\big|\partial^2 y_k/\partial x_{u,d}\,\partial x_{w,d'}\big| \\
-        \rho_v &= \frac{\sum_u I_{vu}\, d(v,u)}{\sum_u I_{vu}}, \quad d\in\{\text{hops}, R\}
-      \end{align*}
-      Graph range is the mean over nodes; dataset range is the mean over graphs.
-    \end{column}
-    \begin{column}{0.42\textwidth}
-      \begin{itemize}\small
-        \item \textbf{Node-level} (Jacobian): reuses the Jacobian sweeps; matches the paper's LRGB setting
-        \item \textbf{Graph-level} (Hessian): 30 graphs, $\approx$50\,s per graph on CPU; \alert{ran out of memory on the T4} in G0
-        \item \alert{Caveats}: the Hessian is zero for ReLU-only $\alpha=0$; pooling into a nonlinear head extends the range past the receptive field
-        \item Reading rule: all hop ranges $\le L/2 \Rightarrow$ short-range
-      \end{itemize}
-    \end{column}
-  \end{columns}
-\end{frame}
-
-
-% =====================================================================
-\section{Results}
-
-\begin{frame}{Gate G0 calibration on Colab: \alert{below threshold}}
-  \begin{columns}[c]
-    \begin{column}{0.6\textwidth}
-      \centering
-      \begin{tikzpicture}
-      \begin{groupplot}[group style={group size=2 by 1, horizontal sep=0.95cm},
-          width=0.53\textwidth, height=4.2cm, xlabel={Epoch}, xmin=25, xmax=190,
-          tick label style={font=\tiny}, label style={font=\scriptsize},
-          grid=major, grid style={gray!25}]
-      \nextgroupplot[ylabel={Training loss}, ymin=0, ymax=0.16]
-      \addplot[thick, color=ink, mark=*, mark size=0.9pt] coordinates {
-       (30,0.1519) (40,0.1180) (50,0.0871) (60,0.0693) (70,0.0516) (80,0.0442) (90,0.0369)
-       (100,0.0309) (110,0.0253) (120,0.0220) (130,0.0189) (140,0.0155) (150,0.0131)
-       (160,0.0115) (170,0.0099) (180,0.0092) (182,0.0092)};
-      \nextgroupplot[ylabel={AP}, ymin=0.50, ymax=0.67,
-          legend style={font=\tiny, at={(0.98,0.03)}, anchor=south east}]
-      \addplot[thick, color=accent, mark=*, mark size=0.9pt] coordinates {
-       (30,0.5475) (40,0.5071) (50,0.5820) (60,0.5843) (70,0.6027) (80,0.5989) (90,0.5885)
-       (100,0.6097) (110,0.6151) (120,0.6069) (130,0.6126) (140,0.6126) (150,0.6261)
-       (160,0.6262) (170,0.6196) (180,0.6197) (182,0.6225)};
-      \addlegendentry{Val AP}
-      \addplot[thick, dashed, color=good] coordinates {
-       (30,0.5716) (50,0.6126) (90,0.6230) (130,0.6183) (150,0.6259) (182,0.6259)};
-      \addlegendentry{Test AP at best val}
-      \addplot[thin, densely dotted, color=warm, domain=25:190] {0.652};
-      \addlegendentry{G0 (0.652)}
-      \end{groupplot}
-      \end{tikzpicture}
-
-      \snote{\texttt{pilot\_equivalence.yaml}: 4 layers, $\alpha=0.5$, seed 0, 404,654 params, T4, $\approx$19\,s/epoch}
-    \end{column}
-    \begin{column}{0.38\textwidth}
-      \begin{itemize}\small
-        \item Best val AP 0.6281 at epoch 142 (stopped at 182); \textbf{test AP 0.6259}, 0.026 short of 0.652 and below G1's 0.63
-        \item Loss keeps falling to 0.009 while val AP plateaus near 0.62 from epoch 90: \alert{overfitting}, not underfitting
-        \item Measurements not saved: the Hessian graph range ran out of memory on the T4 and was stopped
-        \item $\alpha=0$ and $\alpha=1$ sanity runs started, not finished
-      \end{itemize}
-    \end{column}
-  \end{columns}
-\end{frame}
+\section{Rivers}
 
 \begin{frame}{River experiment: setup}
   \begin{columns}[c]
     \begin{column}{0.44\textwidth}
       \begin{itemize}\small
-        \item GRU temporal encoder (90 days) $\to$ 8 spatial layers, width 64, 4 heads
-        \item Each layer: $(1-\alpha)\,\mathrm{LN(MP)} + \alpha\,\mathrm{LN(Attn)}$
-        \item MP: upstream$\to$downstream, mean aggregation
-        \item Attention over ancestors, with a hop bias
+        \item LamaH-CE: 32 upstream gauge trees, 5--35 nodes \snote{(Klingler et al.\ 2021)}
+        \item Predict discharge 1/3/7 days ahead; inputs: weather, or weather + flow
+        \item GRU encoder (90 days) $\to$ 8 spatial layers: $(1-\alpha)\,\mathrm{LN(MP)} + \alpha\,\mathrm{LN(Attn)}$
         \item Baselines: outlet-only GRU, upstream pooling, persistence
         \item 72 fits, 3 seeds, $\approx$28.5 GPU-h
         \item Hypothesis: faster upstream growth $V(r)$ means a larger gain over MP
@@ -647,7 +997,7 @@
   \end{columns}
 \end{frame}
 
-\begin{frame}{Held-out results: the $\alpha$ curve (test NRMSE, lower is better)}
+\begin{frame}{River held-out results: the $\alpha$ curve (test NRMSE, lower is better)}
   \begin{columns}[c]
     \begin{column}{0.46\textwidth}
       \centering\small
@@ -668,16 +1018,15 @@
     \begin{column}{0.5\textwidth}
       \begin{itemize}\small
         \item \textbf{Weather only}: $\alpha=0.75$ is best, \textcolor{good}{9.6\% better than MP}
-        \item But only 0.7\% better than attention and 1.1\% better than pooling, so the gain comes mostly from \emph{global access}
-        \item \textbf{Weather+flow}: \alert{no gain}; every $\alpha>0$ is slightly worse than MP and pooling is best
-        \item Validation-chosen $\alpha$ is unstable once flow is given
+        \item But only 0.7\% better than attention and 1.1\% better than pooling: the gain comes mostly from \emph{global access}
+        \item \textbf{Weather+flow}: \alert{no gain}; every $\alpha>0$ is slightly worse than MP, pooling is best
         \item Mean NSE in the weather regime is negative ($-0.30$ at $\alpha=0.75$)
       \end{itemize}
     \end{column}
   \end{columns}
 \end{frame}
 
-\begin{frame}{$\alpha$ curves per held-out outlet}
+\begin{frame}{River $\alpha$ curves per held-out outlet}
   \centering
   \includegraphics[width=0.8\textwidth]{river_alpha_curves_heldout_weather.png}\\[-0.2em]
   \includegraphics[width=0.8\textwidth]{river_alpha_curves_heldout_weather_flow.png}
@@ -685,7 +1034,7 @@
   \snote{Top: weather (most outlets improve up to $\alpha\ge0.5$; the largest graph, 499, does not). Bottom: weather+flow (flat).}
 \end{frame}
 
-\begin{frame}{Context ablation: a hint of over-squashing}
+\begin{frame}{River context ablation: a hint of over-squashing}
   \begin{columns}[c]
     \begin{column}{0.52\textwidth}
       \centering\small
@@ -703,16 +1052,16 @@
     \end{column}
     \begin{column}{0.44\textwidth}
       \begin{itemize}\small
-        \item MP does \emph{better} when upstream inputs are hidden (same on the development set)
-        \item Attention and the hybrid exploit upstream context: NRMSE about 13\% and 12\% lower than at radius 0
-        \item \alert{Consistent with} over-squashing, but also with optimisation, mean-aggregation or parameter effects
+        \item MP does \emph{better} when upstream inputs are hidden
+        \item Attention and the hybrid use upstream context: NRMSE about 13\% and 12\% lower than at radius 0
+        \item \alert{Consistent with} over-squashing, but also with optimisation or parameter effects
         \item The ablation masks inputs; it does not rewire the graph
       \end{itemize}
     \end{column}
   \end{columns}
 \end{frame}
 
-\begin{frame}{Growth $\to$ gain hypothesis: \alert{not supported}}
+\begin{frame}{River growth $\to$ gain hypothesis: \alert{not supported}}
   \centering
   \includegraphics[width=0.6\textwidth]{river_growth_vs_gain_heldout_weather_a075_3day_mp_vs_attn.png}\\[-0.3em]
   {\tiny Held-out, weather, $\alpha=0.75$, 3-day horizon. Positive = hybrid better than the reference.}
@@ -739,14 +1088,14 @@
         \item The fastest-growing outlet (499) gains \emph{least}
         \item Spearman $\rho(V(2),\text{gain})$ is $-0.70$ vs MP (1- and 3-day) but $+0.90$ vs attention: \textbf{the sign flips with the reference}
         \item $n=5$; leave-one-group-out ranges span both signs ($-1.0$ to $+0.5$)
-        \item 27 development outlets, adjusted for size, depth and area: $\rho\approx0$ for weather vs MP; other references and regimes $-0.27$ to $+0.37$
+        \item 27 development outlets, adjusted for size, depth and area: $\rho\approx0$ for weather vs MP
         \item A graph-conditioned $\alpha$ selector is 2.3\% \emph{worse} than a fixed $\alpha$
       \end{itemize}
     \end{column}
   \end{columns}
 \end{frame}
 
-\begin{frame}{Cost vs $\alpha$}
+\begin{frame}{River cost vs $\alpha$}
   \begin{columns}[c]
     \begin{column}{0.58\textwidth}
       \centering
@@ -773,85 +1122,6 @@
       \end{itemize}
     \end{column}
   \end{columns}
-\end{frame}
-
-\begin{frame}{Status: what does \emph{not} exist yet}
-  \begin{alertblock}{Only one Phase 2 real-data GPU run so far}
-    \begin{itemize}
-      \item G0 ran once: 0.6259 test AP vs the 0.652 threshold, with no measurements saved; $\alpha=0$ and $\alpha=1$ unfinished
-      \item Phase 2 sweep (12 runs) not run: no re-baselined AP, no G1/G2, no Jacobian slope CIs, no entropy-vs-size on correctly built models, no range on real Peptides
-      \item Aligned Tönshoff GCN not run; only the pilot's 0.6263 exists
-      \item Reddit not run on the real graph (SNAP is blocked in the sandbox)
-    \end{itemize}
-  \end{alertblock}
-  \begin{exampleblock}{What is solid}
-    Code for Phases 1 and 2 is built and CPU-tested (125 tests pass). Demos confirm the measures behave as theory predicts. River and tree results are real, but small or confounded.
-  \end{exampleblock}
-\end{frame}
-
-% =====================================================================
-\section{Future work}
-
-\begin{frame}{Next: run on Colab (in order)}
-  \begin{enumerate}
-    \item \textbf{Close the G0 gap} (0.6259 $\to$ 0.652), one change at a time on seed 0: dropout / weight decay against the overfitting, then lr and warmup, then norms. Finish the $\alpha=0$ and $\alpha=1$ runs. On the T4, set \texttt{measure.n\_graphs\_range=0} (or lower it) to avoid the Hessian running out of memory
-    \item \textbf{Phase 2 sweep}: 12 runs, $\approx$5 GPU-h ($\approx$4\,h training + $\approx$1\,h measuring)
-    \item \textbf{Range sanity} on real Peptides: $\alpha=0$ mean node range $\le 5$ hops
-    \item \textbf{Real Reddit}: reproduce the pilot's band ordering, select a target from the data, then 30 seeds $\times$ \{SAGE, VMN\} $\times$ \{distance, random\}
-    \item \textbf{Analysis notebook} $\to$ check G1/G2 $\to$ \texttt{docs/results/phase2.md}
-  \end{enumerate}
-\end{frame}
-
-\begin{frame}{Later phases}
-  \begin{columns}[T]
-    \begin{column}{0.5\textwidth}
-      \begin{description}[P3]\small
-        \item[P3] Full $\alpha$ sweep $\{0,.25,.5,.75,1\}\times3$ seeds; best $\alpha$ per resistance bin; gated-attention baseline
-        \item[P4] Task-range axis: Peptides-func vs Peptides-struct
-        \item[P5] Synthetic suite: controlled resistance and long-range dependence, distractor injection $\to$ \textbf{phase diagram}
-        \item[P6] Predictor of best $\alpha$ from structure + range; held-out check
-      \end{description}
-    \end{column}
-    \begin{column}{0.46\textwidth}
-      \textbf{Tree experiment v2} (planned, not run)
-      \begin{itemize}\small
-        \item Residual Sum-MP/Attention: sum aggregation scaled by $1/\sqrt{\Delta}$, no attention-only hop bias, no amplitude-stripping LayerNorm
-        \item Addressed retrieval: $K=4$ vs $16$ candidates at 4 hops
-        \item Parameter-matched endpoints
-        \item A \textbf{dilution intervention} that adds irrelevant nodes
-      \end{itemize}
-    \end{column}
-  \end{columns}
-\end{frame}
-
-% =====================================================================
-\section*{Summary}
-
-\begin{frame}{Takeaways}
-  \begin{itemize}
-    \item The \textbf{mechanisms} show up in real model code: MP sensitivity falls by orders of magnitude within $L$ hops, and attention sensitivity falls as $1/N$ \snote{(untrained demos)}
-    \item \textbf{Global access helps when the task needs distant information}: synthetic far query, weather-only rivers ($\alpha=0.75$ is 9.6\% better than MP)
-    \item When local history is enough (weather+flow), MP or pooling suffices and \alert{the hybrid only adds cost}
-    \item \alert{Graph growth does not predict} the hybrid's gain: the sign flips with the reference model
-    \item The pilot Peptides evidence is flawed. The rebuilt pipeline's first G0 run reached 0.6259 test AP, \alert{short of 0.652} and overfitting; that gap is closed before the Phase 2 sweep
-    \item Goal: a phase diagram of best $\alpha$ against effective resistance and task range
-  \end{itemize}
-\end{frame}
-
-\begin{frame}[allowframebreaks]{References}
-  \scriptsize
-  \begin{itemize}
-    \item U.~Alon, E.~Yahav. On the Bottleneck of Graph Neural Networks and its Practical Implications. \emph{ICLR}, 2021.
-    \item J.~Topping, F.~Di Giovanni, B.~P.~Chamberlain, X.~Dong, M.~M.~Bronstein. Understanding Over-Squashing and Bottlenecks on Graphs via Curvature. \emph{ICLR}, 2022.
-    \item F.~Di Giovanni, L.~Giusti, F.~Barbero, G.~Luise, P.~Liò, M.~M.~Bronstein. On Over-Squashing in Message Passing Neural Networks: The Impact of Width, Depth, and Topology. \emph{ICML}, 2023.
-    \item M.~Black, Z.~Wan, A.~Nayyeri, Y.~Wang. Understanding Oversquashing in GNNs through the Lens of Effective Resistance. \emph{ICML}, 2023.
-    \item L.~Rampášek, M.~Galkin, V.~P.~Dwivedi, A.~T.~Luu, G.~Wolf, D.~Beaini. Recipe for a General, Powerful, Scalable Graph Transformer. \emph{NeurIPS}, 2022.
-    \item V.~P.~Dwivedi, L.~Rampášek, M.~Galkin, A.~Parviz, G.~Wolf, A.~T.~Luu, D.~Beaini. Long Range Graph Benchmark. \emph{NeurIPS Datasets and Benchmarks}, 2022.
-    \item J.~Tönshoff, M.~Ritzert, E.~Rosenbluth, M.~Grohe. Where Did the Gap Go? Reassessing the Long-Range Graph Benchmark. \emph{LoG} 2023; \emph{TMLR} 2024.
-    \item J.~Bamberger, B.~Gutteridge, et al. On Measuring Long-Range Interactions in Graph Neural Networks. \emph{ICML}, 2025. Code: \texttt{github.com/BenGutteridge/range-measure}.
-    \item S.~Kumar, W.~L.~Hamilton, J.~Leskovec, D.~Jurafsky. Community Interaction and Conflict on the Web. \emph{WWW}, 2018.
-    \item C.~Klingler, K.~Schulz, M.~Herrnegger. LamaH-CE: LArge-SaMple DAta for Hydrology and Environmental Sciences for Central Europe. \emph{Earth System Science Data}, 13, 2021.
-  \end{itemize}
 \end{frame}
 
 \end{document}

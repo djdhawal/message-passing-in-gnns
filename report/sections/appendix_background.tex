@@ -1,0 +1,365 @@
+% ================================================================
+% Appendices A-E: background experiments (moved from the main text), mechanism checks,
+% pilot mechanistic results, model configurations, social-graph configurations.
+% ================================================================
+\newpage
+\appendixsection{A}{Background Experiments}
+\label{app:background}
+The experiments in this appendix came first. They used smaller graphs where we expected long-range effects to be visible: river gauge networks, synthetic trees, and the Peptides-func molecules of the Long Range Graph Benchmark. They also share the original design, in which a single blend weight $\alpha$ moves a model from message passing ($\alpha=0$) to attention ($\alpha=1$).
+
+They taught us four things, and each one fed into the redesign. First, global access helps only when the task needs information that message passing does not deliver; when local information suffices, a hybrid adds only cost. Second, simple descriptors of small graphs, such as how fast the upstream network grows, did not predict the benefit, because there were too few graphs and their size, depth and area moved together. Third, near-tree graphs such as molecules and rivers cannot separate effective resistance from hop distance. Fourth, a mechanistic measurement is only meaningful on a model that has learned the task, and the rebuilt Peptides pipeline did not reach its calibration target. Together these pointed to large graphs with many independent units, a knob that training cannot undo, and tasks whose range is known: the social-graph design of the main text. Table~\ref{tab:status} summarises the status of each background experiment. No further work on them is planned.
+
+\begin{table}[htbp]
+\caption{Status of the background experiments}
+\label{tab:status}
+\centering\small
+\begin{tabular}{@{}L{2.0in}L{2.3in}L{1.6in}@{}}
+\toprule
+Experiment & Purpose & Status \\
+\midrule
+LamaH-CE river $\alpha$ sweep & Real directed trees, $\alpha$ curve, context ablation & Complete, 72 fits \\
+Controlled tree sweep & Near versus far query across $\alpha$ & Complete, 21 fits, confounded \\
+Pilot Peptides-func replication & GCN and GPS against published values & Pilot, one seed \\
+Pilot mechanistic measurements & Jacobian slope and entropy & Pilot, models did not train \\
+Pilot Reddit experiment & Virtual node versus GraphSAGE by hop & Pilot, unfair baseline \\
+Gate G0 calibration & Rebuilt hybrid against 0.652 AP & Run once; below threshold \\
+Peptides-func re-baseline & AP, Jacobian, entropy, range with CIs & Not run; superseded \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ----------------------------------------------------------------
+\subsection{River Discharge Forecasting}
+\emph{Setup.} The river data come from LamaH-CE \citep{klingler2021}. For each outlet gauge we built the directed tree of upstream gauges, giving 32 graphs with 5 to 35 nodes and depths of 1 to 8 hops: 27 development outlets and 5 held-out outlets. Each node carries 90 days of daily inputs, and the target is outlet discharge 1, 3 and 7 days ahead. We used two input regimes, weather only and weather plus historical discharge, and split by time (1981--1999 training, 2000--2005 validation, 2006--2017 test). A shared GRU encoded each node's history. Eight spatial layers then combined upstream-to-downstream message passing with attention over a node's upstream ancestors, as $(1-\alpha)\,\mathrm{LN}(\mathrm{MP}) + \alpha\,\mathrm{LN}(\mathrm{Attn})$. Baselines were an outlet-only GRU, topology-free pooling of upstream encodings, and persistence (tomorrow equals today). Error is reported as NRMSE, normalised so that outlets of different size count equally. Rivers are a natural test of reach: when only weather is observed, rain that falls upstream reaches the outlet days later, so the outlet must listen to distant nodes.
+
+We summarised each outlet's upstream structure by its growth profile $V(r)$, the number of upstream gauges within $r$ directed hops including the outlet (Figure~\ref{fig:growth}). Profiles that rise steeply reach many upstream nodes within a few hops.
+
+\begin{figure}[htbp]
+\caption{Upstream growth profiles $V(r)$ of the river gauge networks}
+\label{fig:growth}
+\centering
+\includegraphics[width=0.85\textwidth]{river_upstream_growth_profiles.png}
+\end{figure}
+
+\emph{Results.} Table~\ref{tab:river} reports held-out test NRMSE, averaged over the five held-out outlets, three horizons and three seeds. With weather inputs only, error fell steadily as $\alpha$ rose from 0 to 0.75, and the $\alpha=0.75$ blend had 9.6\% lower NRMSE than pure message passing. Its advantage over pure attention (0.7\%) and upstream pooling (1.1\%) was small, so most of the gain came from giving the outlet global access to upstream nodes rather than from blending. With historical discharge added, every $\alpha>0$ was slightly worse than message passing, and pooling was best. The validation-selected $\alpha$ was stable with weather inputs (0.75, 0.75 and 0.5 at the three horizons) and unstable once flow was supplied (0, 1 and 1).
+
+\begin{table}[htbp]
+\caption{Held-out river test NRMSE by configuration and input regime (lower is better)}
+\label{tab:river}
+\centering\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Configuration & Weather & Weather + flow \\
+\midrule
+Message passing ($\alpha=0$) & 0.2666 & 0.1691 \\
+Hybrid, $\alpha=0.25$ & 0.2628 & 0.1722 \\
+Hybrid, $\alpha=0.50$ & 0.2489 & 0.1706 \\
+Hybrid, $\alpha=0.75$ & \textbf{0.2409} & 0.1716 \\
+Attention ($\alpha=1$) & 0.2426 & 0.1713 \\
+Upstream pooling & 0.2437 & \textbf{0.1689} \\
+Outlet-only GRU & 0.2600 & 0.1696 \\
+Persistence & -- & 0.1891 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.8\textwidth}{\footnotesize\textit{Note.} Means over five held-out outlets, three horizons and seeds 42--44. Persistence requires flow history and is a single deterministic run.}
+\end{table}
+
+Figure~\ref{fig:riveralpha} shows the $\alpha$ curve for each held-out outlet. With weather inputs most outlets improved up to $\alpha\ge0.5$, but the largest graph (outlet 499, 29 nodes) did not; with flow the curves were flat. Aggregate skill was modest: the mean Nash--Sutcliffe efficiency \citep{nash1970} of the weather-only $\alpha=0.75$ model was $-0.30$, worse than predicting each outlet's mean flow, against 0.37 for pooling with flow history.
+
+\begin{figure}[htbp]
+\caption{Held-out test NRMSE against $\alpha$ for each outlet, weather inputs (top) and weather plus flow (bottom)}
+\label{fig:riveralpha}
+\centering
+\includegraphics[width=0.85\textwidth]{river_alpha_curves_heldout_weather.png}\\[4pt]
+\includegraphics[width=0.85\textwidth]{river_alpha_curves_heldout_weather_flow.png}
+\end{figure}
+
+A context ablation tested whether models used upstream information at all (Table~\ref{tab:context}). Hiding dynamic inputs beyond the outlet raised the error of the $\alpha=0.75$ blend by about 12\% and of pure attention by about 13\%, so both used upstream context. Pure message passing did slightly \emph{better} with upstream inputs hidden. A model that is better off without information it could reach is consistent with over-squashing. However, mean aggregation, the attention-only hop bias, layer normalisation and unequal parameter counts could produce the same pattern.
+
+\begin{table}[htbp]
+\caption{Held-out river test NRMSE under input-context ablation, weather inputs}
+\label{tab:context}
+\centering\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Configuration & Full context & Radius 2 & Radius 0 \\
+\midrule
+Message passing ($\alpha=0$) & 0.2666 & 0.2673 & \textbf{0.2584} \\
+Hybrid, $\alpha=0.75$ & \textbf{0.2409} & 0.2695 & 0.2741 \\
+Attention ($\alpha=1$) & \textbf{0.2426} & 0.2583 & 0.2791 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.8\textwidth}{\footnotesize\textit{Note.} Radius $r$ keeps dynamic inputs only within $r$ hops of the outlet; static attributes and the graph are unchanged. Means over horizons and seeds.}
+\end{table}
+
+We tested whether upstream growth predicts the hybrid's benefit by relating each held-out outlet's two-hop volume $V(2)$ to the gain of the $\alpha=0.75$ blend (Table~\ref{tab:outlets} and Figure~\ref{fig:growthgain}). The fastest-growing outlet, 499, gained least. The Spearman correlation between $V(2)$ and gain was $-0.70$ at the 1- and 3-day horizons against message passing but $+0.90$ at every horizon against attention, so its sign depended on the reference. Leaving out one dependency group gave correlations from $-1.0$ to $+0.5$. Across the 27 development outlets, the association was close to zero once size, depth and drainage area were controlled. A graph-conditioned $\alpha$ selector was 2.3\% worse than the validation-selected fixed $\alpha$ (macro NRMSE 0.212 against 0.207). Five held-out graphs cannot support a correlation, which is one reason the main study moved to large graphs with many test units.
+
+\begin{table}[htbp]
+\caption{Gain of the $\alpha=0.75$ blend over message passing for each held-out outlet}
+\label{tab:outlets}
+\centering\small
+\begin{tabular}{@{}rrrrrr@{}}
+\toprule
+Outlet & Nodes & Depth & $V(2)$ & Weather gain & Weather + flow gain \\
+\midrule
+444 & 9 & 6 & 3 & $+13.1\%$ & $-0.1\%$ \\
+609 & 7 & 3 & 5 & $+18.8\%$ & $+1.3\%$ \\
+452 & 8 & 3 & 6 & $+26.2\%$ & $-2.9\%$ \\
+519 & 11 & 3 & 9 & $+2.9\%$ & $+0.3\%$ \\
+499 & 29 & 7 & 13 & $-4.4\%$ & $-8.9\%$ \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.8\textwidth}{\footnotesize\textit{Note.} Positive values mean the blend has lower NRMSE than message passing. Seeds and horizons averaged first.}
+\end{table}
+
+\begin{figure}[htbp]
+\caption{Two-hop upstream volume against gain of the $\alpha=0.75$ blend, held-out outlets, weather inputs, 3-day horizon}
+\label{fig:growthgain}
+\centering
+\includegraphics[width=0.7\textwidth]{river_growth_vs_gain_heldout_weather_a075_3day_mp_vs_attn.png}
+\end{figure}
+
+The hybrids were also the most expensive models (Figure~\ref{fig:cost}). A blend with both branches had about 491,000 active parameters and took about 80 seconds per epoch, against 53 to 54 seconds for either endpoint. Upstream pooling came within 1.1\% of the best weather-only blend with about 27,000 parameters and 15 seconds per epoch. The river study comprised 72 fits and about 28.5 hours of training.
+
+\begin{figure}[htbp]
+\caption{Training cost against $\alpha$ for the river models}
+\label{fig:cost}
+\centering
+\includegraphics[width=0.7\textwidth]{river_cost_vs_alpha.png}
+\end{figure}
+
+% ----------------------------------------------------------------
+\subsection{Controlled Tree Experiment}
+\emph{Setup.} We generated 96 rooted trees with 63 or 127 nodes and a maximum depth of 4 or 8 hops (24 training, 24 validation, 48 test, with no isomorphic duplicates). Every node carries a random standard-normal value. Four nodes at one hop from the root and four at four hops are marked. A query at the root asks for the scaled sum of either the near or the far marked set. Predicting zero gives an MSE of 1, and a predictor that ignores the tree and halves the sum of all eight marked values gives 0.5. The model was the river spatial architecture with eight layers, so both query distances were well inside the reach of message passing.
+
+\emph{Results.} Message passing answered the one-hop query almost perfectly but failed the four-hop query with an MSE of 1.01, no better than predicting zero (Table~\ref{tab:tree}). Because the far nodes were within its eight-layer reach, the failure is not about reach alone. Every blend solved both queries and beat pure attention on the balanced task; the validation-selected blend was $\alpha=0.25$. The comparison is confounded by the same architectural differences as the river ablation.
+
+\begin{table}[htbp]
+\caption{Test MSE on the controlled tree task by query distance}
+\label{tab:tree}
+\centering\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Configuration & Near (1 hop) & Far (4 hops) & Balanced \\
+\midrule
+Message passing ($\alpha=0$) & 0.0036 & 1.0094 & 0.5065 \\
+Hybrid, $\alpha=0.25$ & \textbf{0.0024} & 0.0129 & \textbf{0.0077} \\
+Hybrid, $\alpha=0.50$ & 0.0074 & 0.0147 & 0.0110 \\
+Hybrid, $\alpha=0.75$ & 0.0050 & \textbf{0.0122} & 0.0086 \\
+Attention ($\alpha=1$) & 0.0093 & 0.0189 & 0.0141 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.8\textwidth}{\footnotesize\textit{Note.} Predicting zero gives MSE 1; a topology-blind predictor gives 0.5. Means over seeds 42--44.}
+\end{table}
+
+% ----------------------------------------------------------------
+\subsection{Pilot Results on Peptides-func and Reddit}
+The pilot replication on Peptides-func \citep{dwivedi2022} used random-walk structural encodings, 200 epochs with early-stopping patience 40, and one seed. GPS \citep{rampasek2022}, with four layers of width 96 (386,246 parameters), reached a test AP of 0.6518 (validation 0.6702), matching the published 0.6535. The GCN, with six layers of width 240 (412,790 parameters), reached 0.6263 (validation 0.6545), well short of the tuned value of about 0.686 reported by \citet{tonshoff2024}. The replication therefore reproduced the hybrid but not the tuned message-passing baseline.
+
+The pilot mechanistic notebook reported log-log Jacobian slopes against effective resistance of $-1.76$ for GINE, $-0.48$ for the graph transformer and $-0.81$ for GPS. Those models reached test AP of only 0.54, 0.27 and 0.24, so the attention models had not learned the task. The notebook also trained for only 30 epochs, passed categorical atom codes through a linear layer, used no positional encoding, and averaged attention over heads before computing entropy. Raw entropy rose with graph size for both attention models, but normalised entropy rose only for GPS ($r=+0.60$), not for the transformer ($r=-0.09$). We do not treat these results as evidence; they are shown in Appendix~C. These flaws are why the code was rebuilt as the tested \texttt{gnn\_mech} package.
+
+The pilot Reddit experiment used the SNAP hyperlink graph \citep{kumar2018} and compared GraphSAGE \citep{hamilton2017} with the same network plus a virtual master node connected to every node. Test nodes were grouped by hop distance from the subreddit with the highest out-degree. Averaged over 100 seeds, the virtual node reduced MSE by 12\%, 38\%, 51\%, 62\% and 81\% at one, two, three, four and five or more hops (Figure~\ref{fig:reddit}). A gain that grows with distance is what over-squashing predicts, but three flaws prevent that reading. Only the virtual-node model had an input projection layer. The target, character count, was nearly a function of each node's own features. And the distance-based split confounds distance with distribution shift.
+
+\begin{figure}[htbp]
+\caption{Pilot Reddit test MSE by hop distance from the anchor, GraphSAGE against the virtual-master-node model (100 seeds)}
+\label{fig:reddit}
+\centering
+\includegraphics[width=0.72\textwidth]{proposal_image1.png}
+\end{figure}
+
+% ----------------------------------------------------------------
+\subsection{Calibration of the Rebuilt Peptides Pipeline}
+Before any mechanistic claim on Peptides, the rebuilt pipeline had to pass gate G0: the rebuilt four-layer hybrid at $\alpha=0.5$ (GINE branch, four-head attention, width 96) had to reach the pilot GPS value of 0.652 test AP on seed 0. On a Colab T4 GPU, training stopped early at epoch 182 after 40 epochs without improvement. The best validation AP was 0.6281 at epoch 142, where test AP was 0.6259, 0.026 below the threshold. Figure~\ref{fig:g0} shows the training curve. Training loss fell steadily from 0.152 at epoch 30 to 0.009, while validation AP reached about 0.62 by epoch 90 and then stayed within 0.01 of that value. Continued fitting without validation gain indicates overfitting. The run took about 19 seconds per epoch.
+
+\begin{figure}[htbp]
+\caption{Gate G0 calibration run: training loss and validation AP of the rebuilt four-layer hybrid ($\alpha=0.5$, seed 0)}
+\label{fig:g0}
+\centering
+\begin{tikzpicture}
+\begin{groupplot}[group style={group size=2 by 1, horizontal sep=1.6cm},
+    width=0.47\textwidth, height=5.2cm, xlabel={Epoch}, xmin=25, xmax=190,
+    tick label style={font=\footnotesize}, label style={font=\small},
+    grid=major, grid style={gray!25}]
+\nextgroupplot[ylabel={Training loss}, ymin=0, ymax=0.16]
+\addplot[thick, color=black, mark=*, mark size=1.2pt] coordinates {
+ (30,0.1519) (40,0.1180) (50,0.0871) (60,0.0693) (70,0.0516) (80,0.0442) (90,0.0369)
+ (100,0.0309) (110,0.0253) (120,0.0220) (130,0.0189) (140,0.0155) (150,0.0131)
+ (160,0.0115) (170,0.0099) (180,0.0092) (182,0.0092)};
+\nextgroupplot[ylabel={Average precision}, ymin=0.50, ymax=0.67,
+    legend style={font=\footnotesize, at={(0.98,0.03)}, anchor=south east}]
+\addplot[thick, color=blue!70!black, mark=*, mark size=1.2pt] coordinates {
+ (30,0.5475) (40,0.5071) (50,0.5820) (60,0.5843) (70,0.6027) (80,0.5989) (90,0.5885)
+ (100,0.6097) (110,0.6151) (120,0.6069) (130,0.6126) (140,0.6126) (150,0.6261)
+ (160,0.6262) (170,0.6196) (180,0.6197) (182,0.6225)};
+\addlegendentry{Validation AP}
+\addplot[thick, dashed, color=orange!80!black] coordinates {
+ (30,0.5716) (50,0.6126) (90,0.6230) (130,0.6183) (150,0.6259) (182,0.6259)};
+\addlegendentry{Test AP at best validation}
+\addplot[thin, densely dotted, color=red!70!black, domain=25:190] {0.652};
+\addlegendentry{G0 threshold (0.652)}
+\end{groupplot}
+\end{tikzpicture}
+
+\vspace{4pt}
+\parbox{0.9\textwidth}{\footnotesize\textit{Note.} Logged every 10 epochs from epoch 30; the first 20 epochs ran in an earlier Colab session. Test AP is a step function that changes only when validation AP reaches a new best.}
+\end{figure}
+
+The mechanistic measurements for this run did not complete: the graph-level Hessian range exhausted the T4's 15 GB of memory and was stopped. The sanity runs at $\alpha=0$ and $\alpha=1$ had not finished, so G0 was not passed. When the project moved to social graphs, we stopped further Peptides GPU work and kept these results as they stand.
+
+% ----------------------------------------------------------------
+\subsection{Behaviour of the Measures on Untrained Models}
+To check that each measure responds to the mechanism it targets, we applied the measures to untrained models built from the same code (Appendix~B). The message-passing model's sensitivity fell by a factor of about 3 to 10 per hop and was exactly zero beyond its $L$-hop receptive field. Pure attention was flat at about $1/N$. The $\alpha=0.5$ hybrid followed the local curve for two to three hops before settling on a floor about half as high. Attention entropy lay on $\log N$, with normalised entropy of at least 0.995, and the global model's sensitivity to sources six or more hops away fell exactly as $1/N$, from $6.8\times10^{-2}$ at $N=16$ to $2.1\times10^{-3}$ at $N=512$. On a 150-node path, the node-level range of the five-layer local model was 0.67 hops, within its receptive field, and grew to 18.7 hops for the hybrid and 34.3 for pure attention. These values describe untrained models and are not findings about trained ones.
+
+% ================================================================
+\newpage
+\appendixsection{B}{Mechanism Checks on Untrained Models}
+The figures in this appendix use untrained models built from the same code as the trained ones and serve only to show that each measure responds to the mechanism it targets.
+
+\begin{figure}[H]
+\caption{Jacobian sensitivity against hop distance for untrained local, hybrid and global models}
+\label{fig:demojac}
+\centering
+\includegraphics[width=0.85\textwidth]{demo_jacobian_vs_hops_untrained.pdf}
+\end{figure}
+
+\begin{figure}[H]
+\caption{Attention entropy and long-range sensitivity against graph size for untrained attention models}
+\label{fig:demoent}
+\centering
+\includegraphics[width=0.85\textwidth]{demo_attention_dilution_untrained.pdf}
+\end{figure}
+
+\begin{table}[H]
+\caption{Range measure on a 150-node path graph for untrained models}
+\label{tab:demorange}
+\centering\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Model & Node-level range, hops (mean / max) & Graph-level Hessian range \\
+\midrule
+Local, $\alpha=0$ (5 layers) & 0.67 / 0.69 & Undefined (ReLU only) \\
+Hybrid, $\alpha=0.5$ & 18.7 / 25.8 & Not computed \\
+Global, $\alpha=1$ & 34.3 / 47.0 & Not computed \\
+GCN (6 layers, GELU) & 0.89 / 0.89 & 17.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ================================================================
+\appendixsection{C}{Pilot Mechanistic Results}
+The pilot results below were produced before the pipeline was rebuilt. Models were trained for 30 epochs on one seed, atom codes were passed through a linear layer, no positional encoding was used, and entropy was computed on head-averaged attention. The test AP of each model is reported because a mechanism measured on a model that has not learned the task is not interpretable.
+
+\begin{table}[H]
+\caption{Pilot Jacobian slopes against effective resistance and test AP}
+\label{tab:pilotjac}
+\centering\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & GINE & Graph transformer & GPS \\
+\midrule
+Log-log slope $b$ & $-1.76$ & $-0.48$ & $-0.81$ \\
+Correlation $r$ & $-0.78$ & $-0.41$ & $-0.69$ \\
+Test AP & 0.54 & 0.27 & 0.24 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\caption{Pilot Jacobian sensitivity against effective resistance by architecture}
+\label{fig:pilotjac}
+\centering
+\includegraphics[width=\textwidth]{proposal_image3.png}
+\end{figure}
+
+\begin{figure}[H]
+\caption{Pilot raw and normalised attention entropy against graph size}
+\label{fig:pilotent}
+\centering
+\includegraphics[width=\textwidth]{proposal_image4.png}
+\end{figure}
+
+% ================================================================
+\appendixsection{D}{Model Configurations}
+\begin{table}[H]
+\caption{Peptides-func model configurations and parameter counts}
+\label{tab:configs}
+\centering\small
+\begin{tabular}{@{}lccccr@{}}
+\toprule
+Configuration & Hidden & Layers & Heads & Epochs & Parameters \\
+\midrule
+Local, $\alpha=0$ (GINE) & 96 & 5 & -- & 200 & 311,055 \\
+Hybrid, $\alpha=0.5$ & 96 & 5 & 4 & 200 & 498,255 \\
+Global, $\alpha=1$ (transformer) & 96 & 5 & 4 & 200 & 404,170 \\
+GCN (aligned with T\"{o}nshoff et al.) & 235 & 6 & -- & 250 & 491,865 \\
+G0 calibration, $\alpha=0.5$ & 96 & 4 & 4 & 200 & 404,654 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.85\textwidth}{\footnotesize\textit{Note.} All models use RWSE with 20 steps, dropout 0.1, AdamW with learning rate $10^{-3}$ and five warm-up epochs. The benchmark budget is 500,000 parameters.}
+\end{table}
+
+\begin{table}[H]
+\caption{River model parameter counts and training time per epoch}
+\label{tab:rivercost}
+\centering\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Model & Active parameters & Training seconds per epoch \\
+\midrule
+Message passing ($\alpha=0$) & 355,715 & 52.9 \\
+Hybrid ($0<\alpha<1$) & 490,979 & 80.1--80.6 \\
+Attention ($\alpha=1$) & 291,299 & 54.2 \\
+Upstream pooling & 26,627 & 15.0 \\
+Outlet-only GRU & 22,403 & 10.7 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.85\textwidth}{\footnotesize\textit{Note.} Every configuration instantiates 490,979 parameters; the endpoints use only the active branch. Times exclude evaluation, on an RTX 3080 Laptop GPU.}
+\end{table}
+
+% ================================================================
+\appendixsection{E}{Social-Graph Model and Run Configurations}
+Table~\ref{tab:socialconfig} lists the settings of the two completed Higgs sweeps. The first sweep is configured in \nolinkurl{configs/social/higgs_follow.yaml}. The affine-free sweep uses \nolinkurl{configs/social/higgs_check.yaml} as its base, with the sweep file \nolinkurl{configs/sweeps/higgs_affine.yaml}. That file overrides only the target, the split seed, $\alpha$ and the model type. It runs 2 targets $\times$ 3 split seeds $\times$ 7 variants ($\alpha\in\{0,0.25,0.5,0.75,1\}$, MLP, GCN) $\times$ 2 model seeds, or 84 runs. The subgraph radius sweep (\nolinkurl{configs/sweeps/higgs_radius.yaml}) uses the same base with $\alpha=0.5$, softmax attention masked to $k\in\{0,1,2,3,4,\infty\}$ hops, and the same targets, seeds and baselines.
+
+\begin{table}[H]
+\caption{Settings of the Higgs follow sweeps}
+\label{tab:socialconfig}
+\centering\small
+\begin{tabular}{@{}L{2.1in}L{1.75in}L{1.75in}@{}}
+\toprule
+Setting & First sweep & Affine-free sweep \\
+\midrule
+Subgraph size (METIS parts) & 2,000 nodes (12/3/3) & 500 nodes (49/11/11) \\
+Validation / test share of parts & 0.15 / 0.15 & 0.15 / 0.15 \\
+Split seeds & 0 & 0, 1, 2 \\
+Local branch & GINE (sum) & GCN (degree-normalised) \\
+Attention branch & Performer, 64 random features & Exact softmax over the subgraph \\
+Learnable branch-norm scale & Yes & No \\
+Random-walk encoding (RWSE) steps & 16 & 16 \\
+Hidden width / layers / heads & 64 / 4 / 4 & 64 / 4 / 4 \\
+Dropout / attention dropout & 0.1 / 0.1 & 0.1 / 0.1 \\
+Epochs / early-stopping patience & 100 / 20 & 100 / 20 \\
+Batch size (subgraphs) & 8 & 8 \\
+Learning rate / weight decay & $10^{-3}$ / 0 & $10^{-3}$ / 0 \\
+Warm-up epochs / gradient clip & 5 / 1.0 & 5 / 1.0 \\
+Jacobian sampling & 20 graphs, 8 targets, 32 pairs & 20 graphs, 8 targets, 32 pairs \\
+Entropy sampling & 20 graphs, 64 queries & 20 graphs, 64 queries \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.9\textwidth}{\footnotesize\textit{Note.} Both sweeps use the 11 log-scaled inputs (follow in- and out-degree; and, before the cutoff, outgoing and incoming retweet, mention and reply counts and numbers of distinct partners) and AdamW with warm-up and cosine decay. The first sweep ran three seeds on one split; the affine-free sweep ran model seeds 0 and 1 on each split.}
+\end{table}
+
+The full-graph and planted-target runs follow the build plan in \nolinkurl{docs/social_plan.md}. They set \texttt{data.sampler} to \texttt{full}, so the METIS parts only assign labels to splits while every forward pass uses the whole graph. They train on the full batch, one optimiser step per epoch, and therefore need many more epochs. They use Performer for $k=\infty$ and sparse softmax over the cached $k$-hop pair list for finite $k$. They drop the random-walk encoding (dimension 0), because its exact computation does not scale to the full graph. Planted targets are named \texttt{plant:<family>:<k>} and are generated deterministically from the graph, the family, $k$ and a seed. \pending{Final full-graph and planted-target configuration files and run counts.}

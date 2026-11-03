@@ -1,0 +1,266 @@
+% ================================================================
+% Back half of the report: Findings, Discussion, Conclusion (social-graph design).
+% Numbers come only from the shared facts file; running experiments use \pending{...}.
+% ================================================================
+\section{Findings}
+This section reports what the social-graph work has shown so far. Table~\ref{tab:socialstatus} lists every experiment, what it is for, and whether it has results. Three results are complete: the structure statistics of the graphs (S0), two $\alpha$ sweeps on the Higgs Twitter graph, and a diagnosis of why those sweeps showed no graph effect. The experiments that should answer the thesis question directly, full-graph sweeps and planted long-range targets, are running, and we describe how to read them when they finish. The earlier experiments on rivers, synthetic trees and Peptides-func are in Appendix~A. They shaped this design but are not the main evidence.
+
+\begin{table}[htbp]
+\caption{Status of the social-graph experiments}
+\label{tab:socialstatus}
+\centering\small
+\begin{tabular}{@{}L{2.0in}L{2.5in}L{1.4in}@{}}
+\toprule
+Experiment & Purpose & Status \\
+\midrule
+S0 structure statistics & How bottlenecked each graph is, and whether resistance only measures degree & Complete \\
+Higgs $\alpha$ sweep, first version & Does mixing in attention help a real social label? & Complete; $\alpha$ knob flawed \\
+Higgs $\alpha$ sweep, affine-free & Same question with $\alpha$ as a true fixed weight & Complete \\
+Subgraph diagnosis & Why no graph model beat the MLP & Complete \\
+Full-graph $\alpha$ and radius sweeps & Same sweeps without cutting the graph & Running \\
+Radius sweep on subgraphs & Attention radius $k$ on 500-node parts & Running \\
+Planted targets ($\texttt{shell\_\allowbreak mean}(k)$, $\texttt{retrieve}(k)$) & Tasks with a known range $k$ & Running (being built) \\
+Phase diagram (S4), GFM benchmark (S5), benchmark release (S6) & Answer the thesis question; test foundation models; release tasks & Planned \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ----------------------------------------------------------------
+\subsection{Structure of the Social Graphs}
+Before training any model, we asked how much each graph is shaped by bottlenecks. A bottleneck is a place where many nodes can only reach each other through a few edges. Effective resistance measures this. Treat every edge as a one-ohm resistor; the resistance between two nodes is low when many short paths join them and high when they are joined through a narrow passage. High resistance is where over-squashing is expected \citep{black2023}.
+
+On large, well-connected graphs, raw resistance has a known weakness. Between two far-apart nodes it tends to $1/d_u + 1/d_v$, where $d_u$ and $d_v$ are the two nodes' degrees \citep{f_vonluxburg2014}. The intuition is that current flowing out of a node must first squeeze through that node's own edges. Once it reaches the well-connected middle of the graph, there are so many paths that the rest of the trip costs almost nothing. So raw resistance mostly tells you how many friends the two endpoints have, not whether a bottleneck lies between them. We therefore also report the \emph{excess resistance} $R_{uv} - (1/d_u + 1/d_v)$, the part of the resistance that the endpoints' degrees do not explain.
+
+Table~\ref{tab:s0} shows the results, averaged over the test subgraphs of each dataset. The effective diameter is the number of hops within which most pairs of nodes lie; a small value means the graph is ``small-world'' and every node is a few hops from almost every other.
+
+\begin{table}[htbp]
+\caption{Structure of the social graphs (means over test subgraphs)}
+\label{tab:s0}
+\centering\small
+\begin{tabular}{@{}L{1.1in}L{1.45in}cccc@{}}
+\toprule
+Dataset & Graph & Mean deg. & Eff.\ diam. & Excess $R$ & Spearman $\rho$ \\
+\midrule
+twitch-gamers & 168,114 users, 6.8M edges & 11.6 & 5.8 & 0.39 & 0.90 \\
+reddit-body & 35,776 subreddits, 124,330 links & 4.3 & 5.7 & 0.49 & 0.77 \\
+twitch-de & 9,498 users, 153,138 edges & 22.9 & 3.0 & 0.02 & 0.998 \\
+higgs-follow & 35,593 users, 528,532 edges & 16.7 & 3.7 & 0.09 & 0.98 \\
+higgs-retweet & Sparse retweet layer & -- & -- & -- & 0.07 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.92\textwidth}{\footnotesize\textit{Note.} Excess $R$ is the mean of $R_{uv}-(1/d_u+1/d_v)$. Spearman $\rho$ is the correlation between raw resistance and $1/d_u+1/d_v$ over node pairs in the test subgraphs; a value near 1 means raw resistance is almost a function of degree. Before the 4 July 2012 cutoff the Higgs retweet and reply layers have mean degree 1.4 and 0.16, too sparse to use as designed.}
+\end{table}
+
+Three things stand out. First, on three of the four main graphs, raw resistance is almost entirely explained by degree (Spearman correlation 0.90 or more). Any analysis that bins node pairs by raw resistance on these graphs would really be binning them by degree, which is why excess resistance is the structural axis we use from here on. Second, the Higgs follow graph and twitch-de have very little excess resistance (0.09 and 0.02). Their nodes are densely interconnected, so there are few true bottlenecks for attention to bypass. Twitch-gamers and Reddit have more (0.39 and 0.49), and longer diameters, so they are the better candidates for over-squashing. Third, the sparse Higgs retweet layer is the exception (correlation 0.07): with about one edge per node, it consists mostly of chains and small trees, where resistance behaves like path length rather than degree. It would be an interesting contrast, but it is too sparse for training before the cutoff.
+
+% ----------------------------------------------------------------
+\subsection{Higgs: First $\alpha$ Sweep}
+The Higgs dataset follows Twitter users around the announcement of the Higgs boson discovery in July 2012 \citep{f_dedomenico2013}. Our main real task, \texttt{active\_\allowbreak after}, asks whether a user will retweet, mention or reply after 4 July 2012, using only what was known before: the user's follow degree and their activity counts before the cutoff. About 47\% of users are positive. The graph is the follow network among the 35,593 users who were active before the cutoff.
+
+The intuition for why the graph could matter is social influence. If the people you follow start talking about the Higgs boson, you are more likely to join in. A model that looks at neighbours can pick that up; a model that only sees your own history cannot.
+
+The first sweep cut the graph into 2,000-node subgraphs with METIS, a standard graph-partitioning algorithm that splits a graph into parts while cutting as few edges as it can \citep{f_karypis1998}. Whole subgraphs were assigned to training, validation and test. The hybrid used a GINE message-passing branch and Performer attention, a linear-cost approximation of softmax attention \citep{f_choromanski2021}. Its branch normalisations had learnable scales. Table~\ref{tab:higgsA} shows test AUROC (the probability that a random positive user is scored above a random negative one; 0.5 is chance).
+
+\begin{table}[htbp]
+\caption{Higgs \texttt{active\_\allowbreak after}, first sweep: test AUROC (2,000-node subgraphs, 3 seeds)}
+\label{tab:higgsA}
+\centering\small
+\begin{tabular}{@{}lc@{}}
+\toprule
+Model & Test AUROC \\
+\midrule
+MLP (no graph) & \textbf{0.687} $\pm$ 0.000 \\
+GCN & 0.684 $\pm$ 0.000 \\
+Hybrid, $\alpha=0$ (message passing only) & 0.652 $\pm$ 0.034 \\
+Hybrid, $\alpha=0.25$ & 0.648 $\pm$ 0.003 \\
+Hybrid, $\alpha=0.5$ & 0.669 $\pm$ 0.026 \\
+Hybrid, $\alpha=0.75$ & 0.666 $\pm$ 0.019 \\
+Hybrid, $\alpha=1$ (attention only) & 0.677 $\pm$ 0.003 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.8\textwidth}{\footnotesize\textit{Note.} Mean $\pm$ standard deviation over three seeds. Branch normalisations had learnable scales, so $\alpha$ was not a fixed weight (see text).}
+\end{table}
+
+The MLP, which ignores the graph entirely, was the best model, and no hybrid came within its noise. Two problems showed up. GINE adds up its neighbours' messages, and on hub users with thousands of followers that sum becomes very large, which made $\alpha=0$ unstable ($\pm0.034$). More importantly, we realised that $\alpha$ in this design is not a real knob. The layer computes $(1-\alpha)\,\mathrm{Norm}(\text{message passing}) + \alpha\,\mathrm{Norm}(\text{attention})$, and each normalisation has a learnable scale. Training can grow one branch's scale and shrink the other's, undoing whatever $\alpha$ we set. Any $\alpha$ strictly between 0 and 1 then fixes only the starting point of training, not the final model. We fixed both problems in the next sweep.
+
+% ----------------------------------------------------------------
+\subsection{Higgs: Affine-Free $\alpha$ Sweep}
+The second sweep removed the learnable scales from the branch normalisations, so $\alpha$ is now a true fixed mixing weight. It replaced GINE with a degree-normalised GCN branch, which averages rather than sums neighbours and so stays stable on hubs. Because the subgraphs were smaller (500 nodes), we could use exact softmax attention instead of the Performer approximation. Smaller parts also gave about 11 test subgraphs instead of 3. We ran three different partition splits, each with two model seeds.
+
+We added a second target, \texttt{activate\_\allowbreak passive}. It has the same label but is scored only on the roughly 11\% of users with no activity before the cutoff. For these users, their own history is empty: the only features left are follow counts. If the graph carries any signal, this is where it should show, because the model has nothing else to go on. Table~\ref{tab:higgsB} and Figure~\ref{fig:higgsalpha} show the results.
+
+\begin{table}[htbp]
+\caption{Higgs affine-free $\alpha$ sweep: test AUROC (500-node subgraphs)}
+\label{tab:higgsB}
+\centering\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Model & \texttt{active\_\allowbreak after} & \texttt{activate\_\allowbreak passive} \\
+\midrule
+MLP (no graph) & \textbf{0.710} $\pm$ 0.012 & \textbf{0.664} $\pm$ 0.009 \\
+GCN & 0.706 $\pm$ 0.010 & 0.661 $\pm$ 0.013 \\
+Hybrid, $\alpha=0$ & 0.697 $\pm$ 0.003 & 0.663 $\pm$ 0.012 \\
+Hybrid, $\alpha=0.25$ & 0.691 $\pm$ 0.007 & 0.642 $\pm$ 0.020 \\
+Hybrid, $\alpha=0.5$ & 0.696 $\pm$ 0.003 & 0.650 $\pm$ 0.015 \\
+Hybrid, $\alpha=0.75$ & 0.700 $\pm$ 0.005 & 0.651 $\pm$ 0.010 \\
+Hybrid, $\alpha=1$ & 0.698 $\pm$ 0.007 & 0.653 $\pm$ 0.012 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.85\textwidth}{\footnotesize\textit{Note.} Mean $\pm$ standard deviation over 3 split seeds $\times$ 2 model seeds. For \texttt{active\_\allowbreak after} at $\alpha=0$, 0.25 and 0.5, $n=4$ of 6 because one batch of runs failed on a storage error. GCN local branch, exact softmax attention, branch normalisations without learnable scale.}
+\end{table}
+
+\begin{figure}[htbp]
+\caption{Test AUROC against $\alpha$ on Higgs, affine-free sweep, with MLP and GCN reference lines}
+\label{fig:higgsalpha}
+\centering
+\begin{tikzpicture}
+\begin{groupplot}[group style={group size=2 by 1, horizontal sep=1.6cm},
+    width=0.47\textwidth, height=5.4cm, xlabel={$\alpha$}, xmin=-0.08, xmax=1.08,
+    xtick={0,0.25,0.5,0.75,1},
+    tick label style={font=\footnotesize}, label style={font=\small}, title style={font=\small},
+    yticklabel style={/pgf/number format/fixed, /pgf/number format/precision=2},
+    grid=major, grid style={gray!25}]
+\nextgroupplot[title={\texttt{active\_\allowbreak after} (all users)}, ylabel={Test AUROC}, ymin=0.675, ymax=0.725,
+    legend style={font=\footnotesize, at={(0.03,0.97)}, anchor=north west}, legend columns=3]
+\addplot[thick, color=blue!70!black, mark=*, mark size=1.5pt,
+    error bars/.cd, y dir=both, y explicit] coordinates {
+ (0,0.697) +- (0,0.003) (0.25,0.691) +- (0,0.007) (0.5,0.696) +- (0,0.003)
+ (0.75,0.700) +- (0,0.005) (1,0.698) +- (0,0.007)};
+\addlegendentry{Hybrid}
+\addplot[thick, dashed, color=red!70!black, domain=-0.08:1.08, samples=2] {0.710};
+\addlegendentry{MLP}
+\addplot[thick, densely dotted, color=black, domain=-0.08:1.08, samples=2] {0.706};
+\addlegendentry{GCN}
+\nextgroupplot[title={\texttt{activate\_\allowbreak passive} (inactive users)}, ymin=0.615, ymax=0.685]
+\addplot[thick, color=blue!70!black, mark=*, mark size=1.5pt,
+    error bars/.cd, y dir=both, y explicit] coordinates {
+ (0,0.663) +- (0,0.012) (0.25,0.642) +- (0,0.020) (0.5,0.650) +- (0,0.015)
+ (0.75,0.651) +- (0,0.010) (1,0.653) +- (0,0.012)};
+\addplot[thick, dashed, color=red!70!black, domain=-0.08:1.08, samples=2] {0.664};
+\addplot[thick, densely dotted, color=black, domain=-0.08:1.08, samples=2] {0.661};
+\end{groupplot}
+\end{tikzpicture}
+
+\vspace{4pt}
+\parbox{0.9\textwidth}{\footnotesize\textit{Note.} Points are means and bars one standard deviation across split and model seeds (Table~\ref{tab:higgsB}). The two panels have different vertical scales.}
+\end{figure}
+
+Again no graph model beat the MLP, on either target. Three readings follow.
+
+\emph{An MLP that beats every graph model means the label is mostly predictable from a user's own features.} The MLP sees exactly the same inputs as the graph models, minus the neighbours. If the neighbours carried useful information that the graph models could extract, at least one of them should do better. When none does, either the neighbour signal is weak, or the models were not given access to it. The next subsection shows that the second explanation applies here.
+
+\emph{The passive users are where the graph should matter, and it still did not help.} For \texttt{active\_\allowbreak after}, past activity is a strong predictor (people who tweeted before tend to tweet again), so a small neighbour effect is easy to miss. For \texttt{activate\_\allowbreak passive} that shortcut is gone. That message passing at $\alpha=0$ only matched the MLP here (0.663 against 0.664), and adding attention made things slightly worse (0.642 to 0.653), was the first sign that something in the setup was hiding the neighbours.
+
+\emph{A flat $\alpha$ curve tells you less than it seems to.} On \texttt{active\_\allowbreak after}, all five hybrids lie between 0.691 and 0.700, with seed-to-seed spreads of similar size. This does not show that attention and message passing are equivalent, or that over-squashing and dilution are absent. It shows that, for this task and this setup, neither mechanism delivered information the model could use beyond a user's own features. A flat curve is what you would expect whenever the task does not depend on distant nodes, whatever the graph's structure. Only a task that needs distant information can tell the two mechanisms apart, which is why we built planted targets with a known range.
+
+% ----------------------------------------------------------------
+\subsection{Why the Graph Did Not Help: Subgraph Partitioning}
+To check whether there was any neighbour signal to find, we fitted a plain logistic regression three ways: on a user's own features; on own features plus the averages of their one- and two-hop neighbours' features in the full graph; and on the same averages computed only from neighbours inside the user's METIS part. The last version sees exactly the neighbours a subgraph-trained model sees. Table~\ref{tab:partition} shows test AUROC.
+
+\begin{table}[htbp]
+\caption{Neighbour signal with and without cutting the Higgs follow graph (logistic regression, test AUROC)}
+\label{tab:partition}
+\centering\small
+\begin{tabular}{@{}cccccc@{}}
+\toprule
+Part size & Edges kept & Users & Own & + nbrs (full graph) & + nbrs (in part) \\
+\midrule
+500 & 32\% & All & 0.672 & \textbf{0.690} & 0.673 \\
+500 & 32\% & Passive & 0.677 & \textbf{0.705} & 0.690 \\
+2,000 & 47\% & All & 0.694 & \textbf{0.707} & 0.700 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.9\textwidth}{\footnotesize\textit{Note.} ``Own'' uses a user's own features only; ``+ nbrs'' adds the means of one- and two-hop neighbours' inputs. ``In part'' uses only neighbours inside the same METIS part. ``Edges kept'' is the share of follow edges with both ends in the same part.}
+\end{table}
+
+There is a real neighbour signal, but it is modest. With the full graph, neighbours add 0.018 AUROC over own features for all users and 0.028 for passive users. As expected, the gain is larger where a user's own history is empty. Partitioning destroys most of it. With 500-node parts, only 32\% of follow edges stay inside a part, and the neighbour gain for all users falls from 0.018 to 0.001. For passive users it falls from 0.028 to 0.013, and with 2,000-node parts it falls from 0.013 to 0.006.
+
+The intuition is simple. Message passing can only use the edges it is given. A part keeps all the nodes in it but drops every edge that crosses into another part. In a road network or a molecule, a good partition cuts few edges, because the graph has natural seams. Social graphs are small-world: a typical user is three or four hops from almost everyone, and friendships cross every boundary you could draw. Even the best partition must cut most edges, so each user loses most of their neighbours, and with them the signal. This explains why the MLP was hard to beat in both sweeps. It is a central and honest finding of this project: \emph{on small-world social graphs, subgraph training throws away the edges the models need}. For any long-range target this is worse still, because a $k$-hop neighbourhood almost always crosses part boundaries. All later experiments therefore train on the full graph.
+
+% ----------------------------------------------------------------
+\subsection{Full-Graph $\alpha$ and Radius Sweeps}
+\emph{Design.} The full-graph (transductive) setup keeps the whole 35,593-node Higgs follow graph in every forward pass. The METIS parts now only decide which users' labels are used for training, validation and testing. Message passing and attention run over all nodes and all 528,532 edges. Every model sees every user's features, but only training labels are used to fit the model. Training uses the whole graph at once, so there is one optimiser step per epoch. Two sweeps run on both targets, with three split seeds and two model seeds, a GCN local branch and affine-free normalisations. The first sweep varies $\alpha \in \{0, 0.25, 0.5, 0.75, 1\}$ with Performer attention, because exact softmax attention over 35,593 nodes would not fit in memory. The second sweep varies the \emph{attention radius} $k \in \{0, 1, \infty\}$: attention may only look at nodes within $k$ hops ($k=0$ is pure message passing, $k=\infty$ is full attention via Performer). Radius 2 is left out because it does not fit on the graph: there are 1.09 million attention pairs within one hop but 298.8 million within two, which would need tens of gigabytes per layer. MLP and GCN baselines run with each sweep.
+
+The radius is the new main knob because, unlike $\alpha$, training cannot undo it. A larger $k$ gives each node direct shortcuts past bottlenecks, which reduces over-squashing, but also puts more nodes into each softmax, which increases dilution. The best $k$ is the balance point between the two failures, which is exactly what the thesis is about. Related architectures use $k$-hop connections or distance information to improve accuracy \citep{f_gutteridge2023,f_abboud2022,ying2021}; we use the radius as a controlled diagnostic, paired with the measurements.
+
+\emph{How to read the outcomes.} If graph models now beat the MLP, especially on \texttt{activate\_\allowbreak passive} and by roughly the logistic-regression gap of 0.02 to 0.03 AUROC, subgraphing was the cause of the earlier null results. If $k=1$ or $k=2$ beats both $k=0$ and $k=\infty$, a little attention beyond the immediate neighbours helps, but attending to everyone dilutes the signal. If the curves are still flat and the MLP still wins, the Higgs label is local: what matters is a user's own history and perhaps their immediate neighbours. In that case the real target cannot separate the mechanisms, and the planted targets below become the main test.
+
+\emph{Results.} \pending{Full-graph affine-free $\alpha$ sweep on Higgs, both targets: test AUROC table and $\alpha$ curve, with MLP and GCN references.} \pending{Full-graph attention-radius sweep, $k\in\{0,1,2,\infty\}$, both targets: test AUROC, number of attention pairs at $k=1$ and $k=2$, and attention entropy per $k$.}
+
+% ----------------------------------------------------------------
+\subsection{Planted Long-Range Targets}
+\emph{Why plant a target?} Real social labels do not come with a known range, so a flat result cannot tell us whether the mechanisms did not matter or the task did not need them. A planted target fixes this. We keep the real Higgs graph and the real user features, which become nuisance inputs, and add a few random input channels. The label is an exact function of those channels at a chosen distance $k$. The true range of the task is then $k$ by construction. We checked this in unit tests with the range measure of \citet{bamberger2025} applied to the target function itself.
+
+\emph{Two families.} $\texttt{shell\_\allowbreak mean}(k)$ is the sanity check. Every user gets a random number, and the label is the average of those numbers over the users exactly $k$ hops away. A message-passing model with at least $k$ layers can in principle compute it. $\texttt{retrieve}(k)$ is the main test. Every user carries a random key and a random value. A user's query matches the key of one user exactly $k$ hops away, and no closer user carries that key. The label is the matched user's value. This is a lookup, not an average. Message passing has to carry many key--value pairs through every intermediate user and keep them separate, which is where over-squashing should bite. Attention can match a query to a key directly, but users farther than $k$ hops may share the key, so attention that looks too far collects distractors and dilutes the answer. The number of distinct keys is chosen separately for each $k$ so that each query has about one expected match.
+
+\emph{Design.} Both families run for $k\in\{1,2,3\}$ on the full graph, with models MLP, GCN, hybrid at $\alpha\in\{0, 0.5, 1\}$, and attention radius 1, using two model seeds. We dropped $k=4$, where the four-hop neighbourhood covers 97\% of the graph, and radius 2, which does not fit in memory on this graph. For each trained model we measure its range, the influence-weighted average distance of the inputs it actually uses \citep{bamberger2025}, and compare it with the planted $k$.
+
+\emph{What would support the thesis.} On $\texttt{retrieve}(k)$, the best attention radius should grow with $k$. On Higgs the radius knob can only take the values 0, 1 and $\infty$, so the test is narrower: radius 1 should win at $k=1$, full attention should win at $k\ge2$, pure message passing should degrade as $k$ grows, and full attention should pay for its distractors at $k=1$. A graph with slower-growing neighbourhoods, such as Reddit, is needed to test intermediate radii. The measured range of the best model at each $k$ should also track $k$; the planned gate is a Spearman correlation above 0.8. Together these would show that task range predicts where a model should sit between local and global, and that the range measure can see it. Results against the thesis would include: one setting winning at every $k$; message passing solving \texttt{retrieve} at every $k$ without loss; or a measured range that ignores $k$.
+
+\emph{A caveat built into the graph.} The Higgs follow graph has an effective diameter of about 3.7 hops and a mean degree of about 30 in the full graph (16.7 inside test subgraphs, because partitioning cuts edges), so neighbourhoods grow very fast. The median user has about 30 users at one hop and thousands at two, and the three-hop neighbourhood covers most of the graph. For $k\ge3$ there is little difference between ``within $k$ hops'' and ``everywhere'', so a radius sweep can only resolve $k$ up to about 2. For \texttt{shell\_\allowbreak mean} at $k\ge3$ there is a further leak: the $k$-shell is roughly the whole graph minus the inner ball, so a model can predict the label from nearby nodes. We report this leak alongside the results.
+
+\emph{Results.} Table~\ref{tab:shells} shows how fast neighbourhoods grow on the Higgs follow graph. Almost every user is eligible at every $k$, but the two-hop ball already holds about a quarter of the graph and the three-hop ball most of it. The table also shows a shortcut that full attention can take on \texttt{retrieve}: averaging the value of every user whose key matches the query, at any distance, already predicts the label well at $k\ge2$ ($R^2$ of 0.53 at $k=2$ and 0.90 at $k=3$), because at that scale the matching key is nearly unique in the whole graph. So at large $k$, \texttt{retrieve} tests whether a model can reach far, but puts little pressure on dilution.
+
+\begin{table}[htbp]
+\caption{Neighbourhood growth and planted-target checks on the Higgs follow graph}
+\label{tab:shells}
+\centering\small
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+$k$ & Eligible & Median shell & Ball share & Key matches & Key-match $R^2$ \\
+\midrule
+1 & 98.1\% & 10 & 0\% & 1.51 & 0.00 \\
+2 & 97.7\% & 8,322 & 23\% & 1.48 & 0.53 \\
+3 & 97.6\% & 19,537 & 84\% & 1.56 & 0.90 \\
+4 & 97.6\% & 4,434 & 97\% & 1.20 & 0.98 \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+\parbox{0.92\textwidth}{\footnotesize\textit{Note.} Eligible: users with a defined target. Median shell: median number of users at exactly $k$ hops. Ball share: median share of the graph within $k$ hops. Key matches: mean number of users at hop $k$ matching the query. Key-match $R^2$: how well the label of \texttt{retrieve}($k$) is predicted by averaging the value of every user with the query key, ignoring distance. The analytic range of both target families equals $k$ exactly at every $k$. $k=4$ is excluded from the sweep.}
+\end{table} \pending{Test error of each model on $\texttt{shell\_\allowbreak mean}(k)$ and $\texttt{retrieve}(k)$, $k=1$--3.} \pending{Measured range of each trained model against planted $k$, with the Spearman correlation for the best model per $k$.}
+
+% ----------------------------------------------------------------
+\subsection{Attention Radius on Subgraphs}
+\emph{Design.} This sweep is the radius counterpart of the affine-free sweep and uses the same 500-node subgraphs, targets, seeds and baselines. It fixes $\alpha=0.5$ and varies the attention radius $k\in\{0,1,2,3,4,\infty\}$ with exact softmax attention inside each subgraph. It was launched before the partition diagnosis, and it shares that problem: every radius sees only the 32\% of edges inside the parts. We keep it as a control. If its results are flat while the full-graph radius sweep is not, that confirms that cutting the graph, not the radius knob, hid the effect. If both are flat, the Higgs labels are local.
+
+\emph{Results.} \pending{Radius sweep on 500-node Higgs subgraphs: test AUROC by $k$ for both targets, with MLP and GCN references.}
+
+% ================================================================
+\section{Discussion}
+\subsection{What the Results So Far Mean}
+The completed social-graph results are negative for the graph models, and they are informative. On Higgs, a model that ignores the graph matched or beat every graph model in two sweeps. The diagnosis explains why: the real neighbour signal is modest (0.018 to 0.028 AUROC in a linear model), and cutting the graph into parts removed most of it. Neither sweep was a fair test of message passing against attention, because both mechanisms were starved of the edges they work on. The practical lesson for anyone training GNNs on social data is to check how many edges survive a partition before trusting a subgraph experiment. On small-world graphs the answer can be a third.
+
+The work also changed how we probe the mechanisms. The $\alpha$ knob as first built did not do what its name said, because learnable normalisation scales could undo it. Removing them makes $\alpha$ honest, but the attention radius is a better knob. Learned weights cannot undo it, and it maps directly onto the trade-off between reaching past bottlenecks and spreading attention thin. The structure statistics changed the structural axis as well. Raw effective resistance on these graphs is mostly a degree statistic, so the phase diagram uses excess resistance.
+
+\subsection{Limitations}
+\emph{Small-world graphs limit radius resolution.} With effective diameters of 3.0 to 5.8 hops and neighbourhoods that reach most of the graph within three hops on Higgs, radii above 2 are close to full attention. The radius knob can separate ``immediate neighbours'', ``neighbours of neighbours'' and ``everyone'', but not much more. Reddit and twitch-gamers, with longer diameters and more excess resistance, give more room.
+
+\emph{Resistance is close to degree.} Spearman correlations of 0.77 to 0.998 between raw resistance and $1/d_u+1/d_v$ mean that raw resistance adds little beyond degree. Excess resistance removes the degree part, but on Higgs and twitch-de it is small (0.09 and 0.02), so these graphs have little bottleneck structure to vary. The structural axis of the phase diagram will be narrow on them.
+
+\emph{Few independent test units.} The independent unit for uncertainty is a test subgraph or partition split, not a user, because users in the same part are correlated. The sweeps had 3 to about 11 test subgraphs and three partition splits. The standard deviations in Tables~\ref{tab:higgsA} and~\ref{tab:higgsB} are across a handful of runs, and some cells have $n=4$, so differences of 0.01 AUROC are not resolved.
+
+\emph{Real social labels are mostly local.} The Higgs label is predicted mainly by a user's own history, and the neighbour gain in a linear model is at most about 0.03 AUROC. Real labels like this cannot, on their own, show whether a model reaches far enough, which is why the planted targets carry the main test. The planted targets in turn are synthetic signals on a real graph. They control the task range but not how realistic the task is.
+
+\emph{Undated follow edges.} The Higgs follow graph has no timestamps. Some follow edges may have been created after the cutoff, possibly because of the Higgs activity itself. The node features use only pre-cutoff activity, but the graph cannot be fully restricted to the past, which may inflate the neighbour signal slightly.
+
+\emph{Performer approximates softmax.} Full attention on the whole graph uses Performer, a random-feature approximation of softmax attention with linear cost. Its attention weights are only approximately those of softmax, so its measured entropy and dilution may differ from those of exact attention. Radius-limited attention uses exact softmax over the allowed pairs, so comparisons between finite $k$ and $k=\infty$ mix the radius with the attention type. We report this wherever the two are compared.
+
+\subsection{How the Remaining Phases Answer the Thesis Question}
+The thesis question is whether graph structure and task range together predict where a model should sit between local and global. The remaining phases answer it in three steps. The phase diagram (S4) takes the planted tasks on each graph and plots the best setting, the attention radius or $\alpha$ chosen on validation data, against excess resistance between a node and its planted sources on one axis and task range on the other, with uncertainty from resampling test subgraphs. If the thesis holds, the diagram shows regions: message passing where the range is short and bottlenecks are mild, wider attention where the range is long or bottlenecks are severe, and an overlay of attention entropy marking where dilution begins.
+
+The graph foundation model benchmark (S5) applies the same tasks to models trained once and then used on new graphs. \citet{f_gutteridge2026} showed that foundation models with a fixed message-passing backbone under-reach on tasks whose range differs from what they were trained on. We will test whether this also holds for an attention-based node-level foundation model, GraphPFN \citep{f_eremeev2026}, and possibly GraphAny, on social graphs, by measuring each model's range on $\texttt{retrieve}(k)$ and comparing it with the required $k$. A recent node-classification benchmark found that tuned GNNs still beat foundation models overall but did not analyse range \citep{f_lee2026}. Finally, the benchmark release (S6) publishes the planted-range social tasks as generator code, node indices and seeds. No existing long-range benchmark contains social graphs: LRGB covers vision, chemistry and quantum chemistry \citep{dwivedi2022}, and ECHO covers synthetic long-diameter graphs and molecules \citep{miglior2025}.
+
+% ================================================================
+\section{Conclusion}
+We set out to show that graph structure and task range predict whether a graph model should use local message passing, global attention, or a mix. On large social graphs we have not yet shown this. What we have shown is what stands in the way. Raw effective resistance on these graphs mostly measures degree, so bottlenecks must be measured by excess resistance. The original $\alpha$ knob could be undone by training, so we replaced it with a fixed weight and an attention radius. Most importantly, cutting small-world graphs into subgraphs throws away most of the edges, and with them the neighbour signal. This is why a plain MLP matched every graph model on the Higgs Twitter task.
+
+The full-graph sweeps and the planted long-range targets are running. They are the first experiments in this project in which the task range is known and the graph is intact. If the best attention radius grows with the planted range and the measured range of the best model tracks it, the phase diagram and the foundation model benchmark follow directly. If not, the same measurements will show which assumption failed. For practitioners, the advice that holds already is: before comparing graph architectures, check that the graph signal survives your training setup and that the task actually needs distant information.
