@@ -1,0 +1,365 @@
+# Higgs planted targets (S3) in full-graph mode: does the best attention reach track the planted range k?
+# Targets plant:<family>:<k> (gnn_mech/social/plant.py) for k in {1, 2, 3} x {shell_mean, retrieve}; variants
+# mlp, gcn, hybrid alpha 0 (pure MPNN), hybrid alpha 1 / 0.5 with Performer (global), hybrid alpha 0.5 with
+# softmax attention within 1 or 2 hops (model.attn=radius); model seeds 0, 1; split seed 0.
+# k = 4 is left out: on the follow graph (effective diameter ~3.7) the 4-ball is a median 97% of the graph,
+# shell_mean(4) is then 46% explained by the inner ball (R2; the shell is "everything else"), and
+# retrieve(4) keys are globally unique (a global key match gives R2 0.98), so k = 4 tests nothing that
+# k = 3 does not. k = 3 is kept but is already close to global (the 3-ball covers a median 84% of the graph; notebook 07).
+# radius2 runs come last: the 2-hop pair list on Higgs-follow is 299M pairs, above the default
+# model.attn_max_pairs (20M) and far beyond a T4, so they fail fast with a ValueError (est 0.5 min) and the
+# sweep continues past them; they are kept only because the build contract lists them.
+#   python -m gnn_mech.sweep configs/sweeps/higgs_full_plant.yaml [--dry-run] out_dir=<drive>/runs
+# radius-2 entries removed: the 2-hop pair list on Higgs-follow is ~299M pairs (attn_max_pairs 20M; beyond a T4).
+measure_minutes: 2
+runs:
+- name: shell_mean/k1/mlp
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:1
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: &id001
+  - 0
+  - 1
+  est_minutes: 0.5
+- name: shell_mean/k2/mlp
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:2
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: shell_mean/k3/mlp
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:3
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: retrieve/k1/mlp
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:1
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: retrieve/k2/mlp
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:2
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: retrieve/k3/mlp
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:3
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: shell_mean/k1/gcn
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:1
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 1.0
+- name: shell_mean/k2/gcn
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:2
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 1.0
+- name: shell_mean/k3/gcn
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:3
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 1.0
+- name: retrieve/k1/gcn
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:1
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 1.0
+- name: retrieve/k2/gcn
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:2
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 1.0
+- name: retrieve/k3/gcn
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:3
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 1.0
+- name: shell_mean/k1/alpha0
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:1
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 1.5
+- name: shell_mean/k2/alpha0
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:2
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 1.5
+- name: shell_mean/k3/alpha0
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:3
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 1.5
+- name: retrieve/k1/alpha0
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:1
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 1.5
+- name: retrieve/k2/alpha0
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:2
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 1.5
+- name: retrieve/k3/alpha0
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:3
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 1.5
+- name: shell_mean/k1/alpha1_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:1
+  - data.split_seed=0
+  - model.alpha=1.0
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: shell_mean/k2/alpha1_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:2
+  - data.split_seed=0
+  - model.alpha=1.0
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: shell_mean/k3/alpha1_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:3
+  - data.split_seed=0
+  - model.alpha=1.0
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: retrieve/k1/alpha1_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:1
+  - data.split_seed=0
+  - model.alpha=1.0
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: retrieve/k2/alpha1_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:2
+  - data.split_seed=0
+  - model.alpha=1.0
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: retrieve/k3/alpha1_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:3
+  - data.split_seed=0
+  - model.alpha=1.0
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: shell_mean/k1/alpha0.5_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:1
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: shell_mean/k2/alpha0.5_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:2
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: shell_mean/k3/alpha0.5_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:3
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: retrieve/k1/alpha0.5_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:1
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: retrieve/k2/alpha0.5_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:2
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: retrieve/k3/alpha0.5_performer
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:3
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=performer
+  seeds: *id001
+  est_minutes: 3.0
+- name: shell_mean/k1/radius1
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:1
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 4.0
+- name: shell_mean/k2/radius1
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:2
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 4.0
+- name: shell_mean/k3/radius1
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:shell_mean:3
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 4.0
+- name: retrieve/k1/radius1
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:1
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 4.0
+- name: retrieve/k2/radius1
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:2
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 4.0
+- name: retrieve/k3/radius1
+  config: configs/social/higgs_plant.yaml
+  overrides:
+  - exp_name=higgs_full_plant
+  - data.target=plant:retrieve:3
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 4.0

@@ -1,0 +1,54 @@
+# Higgs planted targets (S3): base config for configs/sweeps/higgs_full_plant.yaml.
+# Real follow graph + real node features (nuisance inputs) + planted channels; target set per run with
+# data.target=plant:<family>:<k> (gnn_mech/social/plant.py; regression, NaN targets are unlabelled).
+# Full-graph transductive mode (data.sampler: full, workstream F): every split sees the whole graph,
+# the 500-node METIS parts only choose which nodes are labelled in train / val / test. The planted
+# target is computed on the full follow graph, so k-hop shells are never cut by part boundaries.
+# Model as in the Higgs checks: local gcn, branch_affine false, 64 hidden, 4 layers (>= k_max = 3 hops,
+# so MPNN failure is not a receptive-field limit), 4 heads, Performer for the global branch.
+# pe_dim 0 (no dense RWSE on 35.6k nodes). One optimizer step per epoch (full batch): 500 epochs,
+# patience 100. Measurements: one graph, 16 Jacobian targets (node-level range), no Hessian range.
+# Model / train / measure settings copied from configs/social/higgs_full.yaml (workstream F); keep them in sync.
+exp_name: higgs_full_plant
+out_dir: ./runs
+seed: 0
+data:
+  name: higgs-follow
+  root: ./data
+  pe_dim: 0
+  target: plant:retrieve:2
+  subgraph_size: 500
+  sampler: full
+  halo_hops: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  split_seed: 0
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 64
+  local: gcn
+  branch_affine: false
+  attn_radius: -1
+  alpha: 0.5
+  hidden: 64
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 500
+  batch_size: 1
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 20
+  grad_clip: 1.0
+  patience: 100
+  checkpoint_every: 25
+measure:
+  n_graphs_jacobian: 1
+  targets_per_graph: 16
+  pairs_per_graph: 64
+  n_graphs_entropy: 1
+  entropy_queries: 256
+  n_graphs_range: 0

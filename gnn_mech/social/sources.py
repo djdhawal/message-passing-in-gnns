@@ -387,8 +387,36 @@ def _one_hot(values: np.ndarray, min_count: int = 1) -> tuple[np.ndarray, list[s
     return out, [str(cats[c]) for c in keep]
 
 
+class _Targets(dict):
+    """{target name: task} that also accepts every planted target ``plant:<family>:<k>[:s<seed>]``
+    (task regression; `gnn_mech.social.plant`), which cannot be enumerated."""
+
+    def __contains__(self, key) -> bool:
+        return dict.__contains__(self, key) or _valid_plant(key)
+
+    def __missing__(self, key):
+        if _valid_plant(key):
+            return "regression"
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+
+def _valid_plant(target) -> bool:
+    from . import plant
+    if not plant.is_plant(target):
+        return False
+    plant.parse(target)          # raises ValueError with the reason on a malformed planted name
+    return True
+
+
 def target_columns(name: str) -> dict[str, str]:
-    """{target name: task} available for dataset `name`."""
+    """{target name: task} available for dataset `name` (plus any ``plant:...`` target, regression)."""
+    return _Targets(_target_columns(name))
+
+
+def _target_columns(name: str) -> dict[str, str]:
     name = name.lower()
     if name == "twitch-gamers":
         return {"mature": "binary", "affiliate": "binary", "dead_account": "binary", "views": "regression",
@@ -415,6 +443,10 @@ def node_target(name: str, graph: Data, target: str) -> tuple[np.ndarray, str]:
     if target not in tasks:
         raise ValueError(f"target {target!r} not available for {name}; expected one of {sorted(tasks)}")
     task = tasks[target]
+    if _valid_plant(target):     # planted target on the full graph (graph.edge_index; follow for Higgs)
+        from . import plant
+        _, y, _ = plant.make(graph, *plant.parse(target))
+        return y.copy(), task
     if name.startswith("higgs-") and target == "activate_passive":
         a = graph.attrs
         y = np.asarray(a["active_after"], dtype=np.float64).copy()
@@ -435,8 +467,16 @@ def node_inputs(name: str, graph: Data, target: str,
 
     `fit_mask` marks the nodes whose values may be used to *choose* columns (train core
     nodes); only Reddit's correlation filter uses it.
+
+    Planted targets (``plant:...``): all real inputs are kept (nuisance; none of them is the target)
+    and the planted channels Z of `plant.make` are appended, named ``plant_*``.
     """
     name = name.lower()
+    if _valid_plant(target):
+        from . import plant
+        Z, _, meta = plant.make(graph, *plant.parse(target))
+        x, names = node_inputs(name, graph, "", fit_mask=fit_mask)
+        return np.concatenate([x, Z], axis=1), names + list(meta["names"])
     a = graph.attrs
     cols: list[np.ndarray] = []
     names: list[str] = []
@@ -482,6 +522,13 @@ def node_inputs(name: str, graph: Data, target: str,
         from ..reddit.target_select import drop_correlated
 
         X = np.stack([a[c] for c in FEATURE_NAMES], axis=1)
+        if target not in FEATURE_NAMES:         # no real target column (planted target): keep them all
+            cols.append(X)
+            names.extend(FEATURE_NAMES)
+            add(a["is_source"].astype(float), "is_source")
+            add(_log1p(a["out_posts"]), "log_out_posts")
+            add(_log1p(a["in_posts"]), "log_in_posts")
+            return np.concatenate(cols, axis=1), names
         j = FEATURE_NAMES.index(target)
         others = np.array([k for k in range(len(FEATURE_NAMES)) if k != j])
         m = a["is_source"] if fit_mask is None else (np.asarray(fit_mask, bool) & a["is_source"])
