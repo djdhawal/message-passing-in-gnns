@@ -6,7 +6,9 @@ graph transformer, values in between are GPS-style hybrids. The global branch is
 dense softmax attention (`GlobalAttn`) or FAVOR+ linear attention (`PerformerAttn`);
 both derive from `AttentionBase`, which is what `attention_layers()` collects.
 
-Normalization: all three norms are `BatchNorm1d`, as in GraphGPS. In `eval()`
+Normalization: all three norms are `BatchNorm1d`, as in GraphGPS. With
+`branch_affine=False` the two branch norms have no learnable scale/shift, so the
+(1 - alpha) / alpha weights cannot be rescaled away by training. In `eval()`
 mode BatchNorm is a fixed per-feature affine map applied to each node
 independently, so it neither mixes nodes nor graphs; Jacobian and isolation
 measurements (done in eval mode) are therefore unaffected by it. In training
@@ -20,10 +22,11 @@ from typing import Optional, Union
 
 import torch
 from torch import Tensor, nn
-from torch_geometric.nn import GINEConv
-from torch_geometric.utils import to_dense_batch
+from torch_geometric.nn import GCNConv, GINEConv
+from torch_geometric.utils import to_dense_adj, to_dense_batch
 
-ATTN_TYPES = ("softmax", "performer")
+ATTN_TYPES = ("softmax", "performer", "radius")
+LOCAL_TYPES = ("gine", "gcn")
 
 
 class AttentionBase(nn.Module):
@@ -69,6 +72,75 @@ class GlobalAttn(AttentionBase):
         # Every graph has >= 1 real node, so no query row is fully masked and
         # no NaNs arise; padded query rows are dropped here.
         return out[mask]
+
+
+def hop_reach(edge_index: Tensor, batch: Tensor, radius: int, max_nodes: int) -> Tensor:
+    """[B, Nmax, Nmax] bool: True where key j is within `radius` hops of query i in the same graph.
+
+    Hops follow `edge_index` (treated as undirected), the diagonal (0 hops) is always True, and
+    padded positions are False. Built by `radius` boolean adjacency products on the dense batch,
+    so it depends on the graph only (never on node features) and Jacobians w.r.t. h0 ignore it.
+    """
+    adj = to_dense_adj(edge_index, batch, max_num_nodes=max_nodes) > 0          # [B, N, N]
+    adj = adj | adj.transpose(1, 2)
+    b, n = adj.shape[0], adj.shape[1]
+    reach = torch.eye(n, dtype=torch.bool, device=adj.device).expand(b, n, n).clone()
+    adj_f = adj.to(torch.float32)
+    for _ in range(radius):
+        nxt = reach | (torch.bmm(reach.to(torch.float32), adj_f) > 0)
+        if torch.equal(nxt, reach):                                             # converged: whole component
+            break
+        reach = nxt
+    return reach
+
+
+class RadiusAttn(GlobalAttn):
+    """Softmax attention restricted to nodes within `radius` hops (same graph).
+
+    The attention-radius knob: radius 0 is self-attention only (a per-node map), radius >= the
+    graph diameter (or -1) is full attention within the graph, as `GlobalAttn`. Unlike the alpha
+    weight, the mask cannot be undone by learned scales: it limits which nodes attention sees.
+    Cached weights are exactly zero outside the radius.
+    """
+
+    def __init__(self, hidden: int, heads: int, attn_dropout: float = 0.0, radius: int = -1):
+        super().__init__(hidden, heads, attn_dropout)
+        self.radius = int(radius)
+
+    def forward(self, x: Tensor, batch: Tensor, edge_index: Optional[Tensor] = None) -> Tensor:
+        if self.radius < 0:
+            return super().forward(x, batch)
+        if edge_index is None:
+            raise ValueError("RadiusAttn needs edge_index")
+        dense, mask = to_dense_batch(x, batch)                                  # [B, Nmax, h], [B, Nmax]
+        n = dense.size(1)
+        allowed = hop_reach(edge_index, batch, self.radius, n) & mask[:, None, :]
+        # padded query rows would be fully masked (NaN); let them see themselves, they are dropped below
+        eye = torch.eye(n, dtype=torch.bool, device=x.device)
+        allowed = allowed | (eye & ~mask[:, :, None])
+        attn_mask = (~allowed).repeat_interleave(self.heads, dim=0)            # [B*heads, N, N], True = blocked
+        out, w = self.attn(dense, dense, dense, attn_mask=attn_mask, need_weights=self.cache,
+                           average_attn_weights=False)
+        if self.cache:
+            self.last_weights = (w * mask[:, None, :, None]).detach()
+            self.last_mask = mask.detach()
+        return out[mask]
+
+
+class GCNLocal(nn.Module):
+    """Degree-normalised local branch: GCNConv (symmetric normalisation, self loops) -> ReLU -> Linear.
+
+    For social graphs, where GINE's sum aggregation over hubs with hundreds of neighbours gives
+    large, high-variance messages. Edge features are ignored.
+    """
+
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.conv = GCNConv(hidden, hidden)
+        self.out = nn.Sequential(nn.ReLU(), nn.Linear(hidden, hidden))
+
+    def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Optional[Tensor] = None) -> Tensor:
+        return self.out(self.conv(x, edge_index))
 
 
 def orthogonal_gaussian(heads: int, m: int, d: int, generator: Optional[torch.Generator] = None,
@@ -223,8 +295,10 @@ class PerformerAttn(AttentionBase):
 
 
 def build_attention(kind: str, hidden: int, heads: int, attn_dropout: float = 0.0,
-                    performer_features: int = 64) -> AttentionBase:
-    """GlobalAttn for kind="softmax", PerformerAttn for kind="performer"."""
+                    performer_features: int = 64, radius: int = -1) -> AttentionBase:
+    """GlobalAttn for kind="softmax", PerformerAttn for "performer", RadiusAttn for "radius"."""
+    if kind == "radius":
+        return RadiusAttn(hidden, heads, attn_dropout, radius)
     if kind == "softmax":
         return GlobalAttn(hidden, heads, attn_dropout)
     if kind == "performer":
@@ -235,7 +309,7 @@ def build_attention(kind: str, hidden: int, heads: int, attn_dropout: float = 0.
 class HybridLayer(nn.Module):
     """One alpha-blended local/global layer.
 
-        h_loc = Norm_loc(GINE(x, edge_index, e))       (not built when alpha == 1)
+        h_loc = Norm_loc(Local(x, edge_index, e))      (not built when alpha == 1; Local = GINE or GCNLocal)
         h_glb = Norm_glb(Attn(x, batch))               (not built when alpha == 0;
                                                         Attn = GlobalAttn or PerformerAttn per `attn`)
         x = x + dropout((1 - alpha) * h_loc + alpha * h_glb)
@@ -252,8 +326,13 @@ class HybridLayer(nn.Module):
         edge_dim: Optional[int] = None,
         attn: str = "softmax",
         performer_features: int = 64,
+        local: str = "gine",
+        branch_affine: bool = True,
+        attn_radius: int = -1,
     ):
         super().__init__()
+        if local not in LOCAL_TYPES:
+            raise ValueError(f"local must be one of {LOCAL_TYPES}, got {local!r}")
         if attn not in ATTN_TYPES:
             raise ValueError(f"attn must be one of {ATTN_TYPES}, got {attn!r}")
         if isinstance(alpha, str):
@@ -268,18 +347,21 @@ class HybridLayer(nn.Module):
         # GraphGPS); only a different width gets a per-layer projection.
         gine_edge_dim = None if edge_dim in (None, hidden) else edge_dim
 
-        self.local: Optional[GINEConv] = None
+        self.local: Optional[nn.Module] = None
         self.norm_loc: Optional[nn.Module] = None
         if alpha < 1.0:
-            mlp = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, hidden))
-            self.local = GINEConv(mlp, train_eps=True, edge_dim=gine_edge_dim)
-            self.norm_loc = nn.BatchNorm1d(hidden)
+            if local == "gcn":
+                self.local = GCNLocal(hidden)
+            else:
+                mlp = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU(), nn.Linear(hidden, hidden))
+                self.local = GINEConv(mlp, train_eps=True, edge_dim=gine_edge_dim)
+            self.norm_loc = nn.BatchNorm1d(hidden, affine=branch_affine)
 
         self.glob: Optional[AttentionBase] = None
         self.norm_glb: Optional[nn.Module] = None
         if alpha > 0.0:
-            self.glob = build_attention(attn, hidden, heads, attn_dropout, performer_features)
-            self.norm_glb = nn.BatchNorm1d(hidden)
+            self.glob = build_attention(attn, hidden, heads, attn_dropout, performer_features, attn_radius)
+            self.norm_glb = nn.BatchNorm1d(hidden, affine=branch_affine)
 
         self.dropout = nn.Dropout(dropout)
         self.ffn = nn.Sequential(
@@ -292,6 +374,7 @@ class HybridLayer(nn.Module):
         if self.local is not None:
             mix = mix + (1.0 - self.alpha) * self.norm_loc(self.local(x, edge_index, edge_attr))
         if self.glob is not None:
-            mix = mix + self.alpha * self.norm_glb(self.glob(x, batch))
+            g = self.glob(x, batch, edge_index) if isinstance(self.glob, RadiusAttn) else self.glob(x, batch)
+            mix = mix + self.alpha * self.norm_glb(g)
         x = x + self.dropout(mix)
         return self.norm_ffn(x + self.ffn(x))

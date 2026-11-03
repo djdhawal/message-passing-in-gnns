@@ -399,7 +399,10 @@ def target_columns(name: str) -> dict[str, str]:
         from ..reddit.data import FEATURE_NAMES
         return {c: "regression" for c in FEATURE_NAMES}
     if name.startswith("higgs-"):
-        return {"active_after": "binary"}
+        # activate_passive: the active_after label, supervised only on users with no actor activity
+        # (RT/MT/RE out-count 0) before the cutoff, so their own history is uninformative and the
+        # signal has to come from neighbours (diffusion-style task).
+        return {"active_after": "binary", "activate_passive": "binary"}
     if name == "social-tiny":
         return {"label": "binary", "reg": "regression", "block": "multiclass"}
     raise ValueError(f"unknown social dataset {name!r}")
@@ -412,6 +415,11 @@ def node_target(name: str, graph: Data, target: str) -> tuple[np.ndarray, str]:
     if target not in tasks:
         raise ValueError(f"target {target!r} not available for {name}; expected one of {sorted(tasks)}")
     task = tasks[target]
+    if name.startswith("higgs-") and target == "activate_passive":
+        a = graph.attrs
+        y = np.asarray(a["active_after"], dtype=np.float64).copy()
+        y[(a["rt_out_pre"] + a["mt_out_pre"] + a["re_out_pre"]) > 0] = np.nan   # active before -> unlabelled
+        return y, task
     y = np.asarray(graph.attrs[target])
     if task == "multiclass":
         return y, task

@@ -107,12 +107,11 @@ class HybridGNN(_GraphModel):
 
     def __init__(self, cfg: ModelConfig, info: DataInfo):
         super().__init__(cfg, info)
-        if cfg.local != "gine":
-            raise ValueError(f"HybridGNN supports local='gine' only, got {cfg.local!r}")
         self.edge_encoder = CategoricalEncoder(info.edge_vocab, cfg.hidden)
         self.layers = nn.ModuleList(
             HybridLayer(cfg.hidden, cfg.heads, cfg.alpha, cfg.dropout, cfg.attn_dropout, edge_dim=cfg.hidden,
-                        attn=cfg.attn, performer_features=cfg.performer_features)
+                        attn=cfg.attn, performer_features=cfg.performer_features, local=cfg.local,
+                        branch_affine=cfg.branch_affine, attn_radius=cfg.attn_radius)
             for _ in range(cfg.layers)
         )
 

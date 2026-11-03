@@ -35,7 +35,8 @@ class DataConfig:
 @dataclass
 class ModelConfig:
     alpha: Union[float, str] = 0.5    # 0 = pure MPNN, 1 = pure attention; "learned" reserved for later phases
-    local: str = "gine"               # local branch: "gine" (edge-aware); "gcn" is a separate baseline model
+    local: str = "gine"               # HybridGNN local branch: "gine" (sum aggregation, edge-aware) | "gcn"
+                                      # (symmetric degree-normalised GCNConv + MLP; for high-degree social graphs)
     arch: str = "hybrid"              # "hybrid" (HybridGNN), "gcn" (Tönshoff-style GCN) or "mlp" (no graph)
     hidden: int = 96
     layers: int = 5
@@ -49,7 +50,11 @@ class ModelConfig:
     norm: str = "batch"               # GCN per-layer norm: "batch" | "none"
     head_layers: int = 2              # Linear layers in the graph-level MLP head (both models)
     attn: str = "softmax"             # global branch: "softmax" (GlobalAttn) | "performer" (PerformerAttn)
+                                      # | "radius" (RadiusAttn: softmax masked to attn_radius hops)
     performer_features: int = 64      # FAVOR+ random features m per head
+    attn_radius: int = -1             # attn="radius": attend only to nodes within this many hops (-1 = whole graph)
+    branch_affine: bool = True        # learnable affine in the two branch norms. False makes alpha a real,
+                                      # fixed mixing weight (with affine on, alpha is absorbed by the norm scales)
 
 
 @dataclass
@@ -131,7 +136,8 @@ _SECTIONS = {"data": DataConfig, "model": ModelConfig, "train": TrainConfig, "me
 _ADDED_FIELDS = {
     "data": ("target", "subgraph_size", "sampler", "halo_hops", "val_frac", "test_frac", "split_seed",
              "max_subgraphs"),
-    "model": ("act", "norm", "head_layers", "attn", "performer_features"),
+    "model": ("act", "norm", "head_layers", "attn", "performer_features", "attn_radius",
+              "branch_affine"),
     "measure": ("n_graphs_range", "sources_per_graph", "hessian_channels", "entropy_queries"),
 }
 

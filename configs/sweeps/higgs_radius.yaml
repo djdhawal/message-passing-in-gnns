@@ -1,0 +1,495 @@
+# Higgs check: attention-radius sweep: MPNN + softmax attention masked to k hops,
+# k=0 means no attention (alpha=0), k=inf means the whole subgraph. alpha fixed at 0.5, branch norms affine-free.
+# 2 targets x 3 split seeds x variants x 2 model seeds; baselines mlp and gcn in the same exp_name.
+#   python -m gnn_mech.sweep configs/sweeps/higgs_radius.yaml [--dry-run] out_dir=<drive>/runs
+# Optional: append data.halo_hops=1 to every run (context-only halo nodes); check subgraph sizes first.
+measure_minutes: 0.5
+runs:
+- name: active_after/split0/radius0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: &id001
+  - 0
+  - 1
+  est_minutes: 0.5
+- name: active_after/split0/radius1
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/radius2
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=2
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/radius3
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=3
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/radius4
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=4
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/radius_inf
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=softmax
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/radius0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/radius1
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/radius2
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=2
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/radius3
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=3
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/radius4
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=4
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/radius_inf
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=softmax
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=1
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/radius0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/radius1
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/radius2
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=2
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/radius3
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=3
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/radius4
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=4
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/radius_inf
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=softmax
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=active_after
+  - data.split_seed=2
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/radius0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/radius1
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/radius2
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=2
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/radius3
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=3
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/radius4
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=4
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/radius_inf
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.5
+  - model.attn=softmax
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/radius0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/radius1
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/radius2
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=2
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/radius3
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=3
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/radius4
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=4
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/radius_inf
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.5
+  - model.attn=softmax
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/radius0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/radius1
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=1
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/radius2
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=2
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/radius3
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=3
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/radius4
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=radius
+  - model.attn_radius=4
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/radius_inf
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.5
+  - model.attn=softmax
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_radius
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5

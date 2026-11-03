@@ -1,0 +1,386 @@
+# Higgs check: alpha sweep with affine-free branch norms (alpha is a real fixed weight).
+# 2 targets x 3 split seeds x variants x 2 model seeds; baselines mlp and gcn in the same exp_name.
+#   python -m gnn_mech.sweep configs/sweeps/higgs_affine.yaml [--dry-run] out_dir=<drive>/runs
+# Optional: append data.halo_hops=1 to every run (context-only halo nodes); check subgraph sizes first.
+measure_minutes: 0.5
+runs:
+- name: active_after/split0/alpha0.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: &id001
+  - 0
+  - 1
+  est_minutes: 0.5
+- name: active_after/split0/alpha0.25
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.25
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/alpha0.5
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.5
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/alpha0.75
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=0.75
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/alpha1.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=0
+  - model.alpha=1.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split0/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/alpha0.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/alpha0.25
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.25
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/alpha0.5
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.5
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/alpha0.75
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=0.75
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/alpha1.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=1
+  - model.alpha=1.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=1
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split1/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=1
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/alpha0.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/alpha0.25
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.25
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/alpha0.5
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.5
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/alpha0.75
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=0.75
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/alpha1.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=2
+  - model.alpha=1.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=2
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: active_after/split2/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=active_after
+  - data.split_seed=2
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/alpha0.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/alpha0.25
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.25
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/alpha0.5
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.5
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/alpha0.75
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=0.75
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/alpha1.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.alpha=1.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split0/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=0
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/alpha0.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/alpha0.25
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.25
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/alpha0.5
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.5
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/alpha0.75
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=0.75
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/alpha1.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.alpha=1.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split1/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=1
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/alpha0.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/alpha0.25
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.25
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/alpha0.5
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.5
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/alpha0.75
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=0.75
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/alpha1.0
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.alpha=1.0
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/mlp
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.arch=mlp
+  seeds: *id001
+  est_minutes: 0.5
+- name: activate_passive/split2/gcn
+  config: configs/social/higgs_check.yaml
+  overrides:
+  - exp_name=higgs_affine
+  - data.target=activate_passive
+  - data.split_seed=2
+  - model.arch=gcn
+  seeds: *id001
+  est_minutes: 0.5
