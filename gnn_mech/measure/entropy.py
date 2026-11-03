@@ -9,6 +9,8 @@ Linear attention (`PerformerAttn`, any layer with `implicit_rows`): no attention
 matrix exists, so each graph's entropy is the mean over at most
 `cfg.entropy_queries` sampled query nodes of the exact implicit rows
 phi(q_i).phi(K)^T / normaliser used by the forward pass.
+Sparse k-hop attention (`RadiusAttn` on its pair-list path, full-graph runs): exact, over every
+query node, from the cached per-pair weights (`sparse_entropy`); no dense matrix is formed.
 """
 from __future__ import annotations
 
@@ -46,6 +48,20 @@ def row_entropy(rows: ArrayLike) -> np.ndarray:
     w = torch.as_tensor(rows).detach().to(torch.float64).cpu()
     plogp = torch.where(w > 0, w * torch.log(w.clamp_min(1e-300)), torch.zeros_like(w))
     return (-plogp.sum(dim=-1)).mean(dim=0).numpy()
+
+
+def sparse_entropy(pairs: torch.Tensor, weights: torch.Tensor, batch: torch.Tensor, n_graphs: int) -> np.ndarray:
+    """Per-graph mean over query nodes of -sum_j a_ij log a_ij from pair weights.
+
+    pairs [2, P] (query, key), weights [P, H] (each query's weights sum to 1), batch [N].
+    Returns [n_graphs, H]."""
+    w = weights.detach().to(torch.float64)
+    plogp = torch.where(w > 0, w * torch.log(w.clamp_min(1e-300)), torch.zeros_like(w))
+    n = batch.numel()
+    h_query = torch.zeros(n, w.shape[1], dtype=torch.float64, device=w.device).index_add_(0, pairs[0], -plogp)
+    per_graph = torch.zeros(n_graphs, w.shape[1], dtype=torch.float64, device=w.device).index_add_(0, batch, h_query)
+    counts = torch.bincount(batch, minlength=n_graphs).clamp_min(1).to(torch.float64)
+    return (per_graph / counts[:, None]).cpu().numpy()
 
 
 # Dense softmax caches [B, H, Nmax, Nmax]: cap B * Nmax^2 per forward so large
@@ -104,7 +120,10 @@ def measure_entropy(model, dataset, cfg: MeasureConfig, device, batch_size: int 
             queries = [np.sort(q_rng.choice(int(n), min(n_queries, int(n)), replace=False)) if n >= 2 else None
                        for n in n_nodes]
             for li, attn in enumerate(layers):
-                if implicit[li]:
+                if getattr(attn, "last_pair_weights", None) is not None:      # sparse radius attention
+                    ent = list(sparse_entropy(attn.last_pairs, attn.last_pair_weights, batch.batch,
+                                              batch.num_graphs))
+                elif implicit[li]:
                     ent = [None if q is None else row_entropy(
                         attn.implicit_rows(torch.as_tensor(s + q, device=device))[:, :, s:s + int(n)])
                         for q, s, n in zip(queries, starts, n_nodes)]

@@ -1,0 +1,53 @@
+# Higgs-follow, full-graph (transductive) mode: base config for configs/sweeps/higgs_full_affine.yaml and
+# higgs_full_radius.yaml (docs/social_plan.md, "Build contract: full-graph mode + planted targets").
+# Why: 500-node METIS subgraphs keep only 32% of the follow edges and the neighbour signal with them.
+# Here the METIS parts (subgraph_size 500, split_seed) only choose which nodes are labelled in each split
+# (the same nodes as in higgs_check.yaml); message passing and attention run over all 35,593 nodes.
+# Changes from configs/social/higgs_check.yaml:
+#   - sampler: full; pe_dim 0 (no dense RWSE eigh on 35k nodes; rwse_sampled exists but is not used).
+#   - attn: performer (k = inf is linear attention on the full graph); radius runs use the sparse
+#     k-hop pair list (k=1: 1.09M pairs; k=2: 299M pairs, over the 20M model.attn_max_pairs budget).
+#   - full batch: one optimizer step per epoch, so 500 epochs with patience 100.
+#   - measure: one graph per split, so targets_per_graph sets the number of Jacobian targets.
+exp_name: higgs_full
+out_dir: ./runs
+seed: 0
+data:
+  name: higgs-follow
+  root: ./data
+  pe_dim: 0
+  target: ""
+  subgraph_size: 500
+  sampler: full
+  val_frac: 0.15
+  test_frac: 0.15
+  split_seed: 0
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 64
+  local: gcn
+  branch_affine: false
+  attn_radius: -1
+  alpha: 0.5
+  hidden: 64
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 500
+  batch_size: 1
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 20
+  grad_clip: 1.0
+  patience: 100
+  checkpoint_every: 25
+measure:
+  n_graphs_jacobian: 1
+  targets_per_graph: 16
+  pairs_per_graph: 64
+  n_graphs_entropy: 1
+  entropy_queries: 256
+  n_graphs_range: 0

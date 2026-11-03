@@ -111,7 +111,8 @@ class HybridGNN(_GraphModel):
         self.layers = nn.ModuleList(
             HybridLayer(cfg.hidden, cfg.heads, cfg.alpha, cfg.dropout, cfg.attn_dropout, edge_dim=cfg.hidden,
                         attn=cfg.attn, performer_features=cfg.performer_features, local=cfg.local,
-                        branch_affine=cfg.branch_affine, attn_radius=cfg.attn_radius)
+                        branch_affine=cfg.branch_affine, attn_radius=cfg.attn_radius,
+                        attn_max_pairs=cfg.attn_max_pairs)
             for _ in range(cfg.layers)
         )
 

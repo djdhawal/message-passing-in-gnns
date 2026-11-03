@@ -96,6 +96,60 @@ def _compute_target_jacobians(h: torch.Tensor, h0: torch.Tensor, targets: list[i
     raise ValueError(f"unknown method {method!r}")
 
 
+def _pair_scale(model) -> int:
+    """Largest (query, key) pair count of the model's last forward (sparse radius attention), or 0."""
+    layers = model.attention_layers() if hasattr(model, "attention_layers") else []
+    return max([int(getattr(m, "last_n_pairs", 0) or 0) for m in layers] or [0])
+
+
+def _target_norms_batched(h: torch.Tensor, h0: torch.Tensor, targets: list[int],
+                          scale: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """(fro^2, l1) [T, N]: sum over (output dim, input dim) of squared / absolute Jacobian entries.
+
+    Rows (target, output dim) are differentiated in chunks of batched backward passes, and each
+    chunk is reduced to per-source norms at once, so no [D, N, D0] Jacobian is ever held (it is
+    0.6 GB per target on a 35k-node graph at hidden 64). The chunk size keeps rows * max(N, scale)
+    * D0 under the device budget; `scale` is the attention pair count, since sparse attention's
+    backward intermediates grow with the pairs, not the nodes.
+    """
+    n, d = h.shape
+    per_row = max(n, int(scale)) * h0.shape[1]
+    budget = _MAX_BATCH_ELEMENTS.get(h.device.type, _MAX_BATCH_ELEMENTS["cpu"])
+    rows_per = max(1, budget // max(per_row, 1))
+    rows = [(t, v, k) for t, v in enumerate(targets) for k in range(d)]
+    fro2 = torch.zeros(len(targets), n, dtype=h.dtype, device=h.device)
+    l1 = torch.zeros_like(fro2)
+    for start in range(0, len(rows), rows_per):
+        chunk = rows[start:start + rows_per]
+        cot = torch.zeros(len(chunk), n, d, dtype=h.dtype, device=h.device)
+        for i, (_, v, k) in enumerate(chunk):
+            cot[i, v, k] = 1.0
+        if len(chunk) == 1:
+            (g,) = torch.autograd.grad(h, h0, grad_outputs=cot[0], retain_graph=True)
+            g = g[None]
+        else:
+            (g,) = torch.autograd.grad(h, h0, grad_outputs=cot, retain_graph=True, is_grads_batched=True)
+        tidx = torch.tensor([t for t, _, _ in chunk], device=h.device)
+        g = g.reshape(len(chunk), n, -1)
+        fro2.index_add_(0, tidx, g.pow(2).sum(-1))
+        l1.index_add_(0, tidx, g.abs().sum(-1))
+    return fro2, l1
+
+
+def _target_norms_loop(h: torch.Tensor, h0: torch.Tensor, targets: list[int]) -> tuple[torch.Tensor, torch.Tensor]:
+    """Reference for `_target_norms_batched`: one backward pass per (target, output dim)."""
+    n = h.shape[0]
+    fro2 = torch.zeros(len(targets), n, dtype=h.dtype, device=h.device)
+    l1 = torch.zeros_like(fro2)
+    for t, v in enumerate(targets):
+        for k in range(h.shape[1]):
+            (g,) = torch.autograd.grad(h[v, k], h0, retain_graph=True, allow_unused=True)
+            if g is not None:
+                fro2[t] += g.reshape(n, -1).pow(2).sum(-1)
+                l1[t] += g.reshape(n, -1).abs().sum(-1)
+    return fro2, l1
+
+
 def target_influence(model, data, targets: list[int], device,
                      method: str = "auto") -> dict[int, tuple[np.ndarray, np.ndarray]]:
     """Per-source sensitivity of each target over *all* nodes of the single graph `data`.
@@ -108,14 +162,21 @@ def target_influence(model, data, targets: list[int], device,
         return {}
     h0, h = _forward_from_h0(model, data, device)
     targets = sorted({int(v) for v in targets})
-    jac = _compute_target_jacobians(h, h0, targets, method)
-    out: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    for v in targets:
-        j = jac[v].detach()  # [D, N, D0]
-        fro = j.pow(2).sum(dim=(0, 2)).sqrt()
-        l1 = j.abs().sum(dim=(0, 2))
-        out[v] = (fro.double().cpu().numpy(), l1.double().cpu().numpy())
-    return out
+    if method == "loop":
+        fro2, l1 = _target_norms_loop(h, h0, targets)
+    elif method in ("batched", "auto"):
+        try:
+            fro2, l1 = _target_norms_batched(h, h0, targets, _pair_scale(model))
+        except RuntimeError as e:  # some ops lack batched-backward rules
+            if method == "batched":
+                raise
+            warnings.warn(f"batched Jacobian failed ({e}); falling back to per-dim loop")
+            fro2, l1 = _target_norms_loop(h, h0, targets)
+    else:
+        raise ValueError(f"unknown method {method!r}")
+    fro = fro2.sqrt().detach().double().cpu().numpy()
+    l1 = l1.detach().double().cpu().numpy()
+    return {v: (fro[t], l1[t]) for t, v in enumerate(targets)}
 
 
 def jacobian_norms(model, data, pairs: list[tuple[int, int]], device, method: str = "auto") -> np.ndarray:

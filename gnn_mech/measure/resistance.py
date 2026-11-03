@@ -101,15 +101,56 @@ def excess_resistance(R, deg_u, deg_v):
     return np.asarray(R, dtype=float) - (1.0 / np.asarray(deg_u, dtype=float) + 1.0 / np.asarray(deg_v, dtype=float))
 
 
+# approx_resistance_rows: Laplacian solves by sparse LU up to this many nodes, else by block
+# Jacobi-preconditioned conjugate gradients (LU fill-in on a 35k-node social graph takes ~5 min,
+# CG ~10 s for k = 256 right-hand sides; both agree to the CG tolerance). Peak memory of the CG
+# path is a few n x k float64 arrays (~70 MB each at n = 35k, k = 256) plus one sign chunk.
+LU_MAX_NODES = 10_000
+CG_TOL = 1e-6
+CG_MAX_ITER = 2000
+_RHS_CHUNK = 50_000          # edges per chunk of random signs (CG path): 50k x 256 float64 = 100 MB
+
+
+def _block_pcg(lap: sp.csr_matrix, y: np.ndarray, tol: float = CG_TOL, max_iter: int = CG_MAX_ITER) -> np.ndarray:
+    """Solve L z = y column-wise (y [n, k], columns sum to 0) by Jacobi-preconditioned CG; returns the
+    mean-zero solution (L+ y for a connected graph). Columns are iterated together (one sparse
+    matmul per step) and each stops updating once its relative residual is below `tol`."""
+    deg = lap.diagonal()
+    dinv = np.where(deg > 0, 1.0 / np.maximum(deg, 1e-300), 0.0)[:, None]
+    x = np.zeros_like(y)
+    r = y.copy()
+    b0 = np.maximum(np.linalg.norm(y, axis=0), 1e-300)
+    z = dinv * r
+    p = z.copy()
+    rz = (r * z).sum(0)
+    for _ in range(max_iter):
+        active = np.linalg.norm(r, axis=0) / b0 > tol
+        if not active.any():
+            break
+        ap = lap @ p
+        pap = (p * ap).sum(0)
+        alpha = np.where(active & (pap > 0), rz / np.where(pap > 0, pap, 1.0), 0.0)
+        x += alpha * p
+        r -= alpha * ap
+        z = dinv * r
+        rz_new = (r * z).sum(0)
+        beta = np.where(active, rz_new / np.where(rz > 0, rz, 1.0), 0.0)
+        p = z + beta * p
+        rz = rz_new
+    return x - x.mean(0, keepdims=True)
+
+
 def approx_resistance_rows(edge_index, num_nodes: int, nodes: np.ndarray, sources: np.ndarray,
-                           k: int = 256, rng: Optional[np.random.Generator] = None) -> np.ndarray:
+                           k: int = 256, rng: Optional[np.random.Generator] = None,
+                           solver: str = "auto") -> np.ndarray:
     """Spielman-Srivastava random-projection estimate of R(sources, nodes), [len(sources), len(nodes)].
 
     Z = L+ B^T Q^T / sqrt(k) (Q: k x m random signs, B: edge incidence) is obtained from k
-    solves with one sparse LU of the grounded Laplacian; R_uv ~ ||Z_u - Z_v||^2. The
-    relative error per pair is O(sqrt(1/k)) (about 10% at k = 256), so this is for graphs
-    too large for `effective_resistance_matrix`, not for excess resistance on dense graphs.
-    `nodes` must induce a connected subgraph; `sources` are positions into `nodes`.
+    Laplacian solves; R_uv ~ ||Z_u - Z_v||^2. The relative error per pair is O(sqrt(1/k))
+    (about 10% at k = 256), so this is for graphs too large for `effective_resistance_matrix`,
+    not for excess resistance on dense graphs. `nodes` must induce a connected subgraph;
+    `sources` are positions into `nodes`. solver: "lu" (sparse LU of the grounded Laplacian),
+    "cg" (block PCG, `_block_pcg`) or "auto" (LU up to LU_MAX_NODES nodes, else CG).
     """
     rng = rng if rng is not None else np.random.default_rng(0)
     a, nodes = _sub_adjacency(edge_index, num_nodes, nodes)
@@ -119,13 +160,30 @@ def approx_resistance_rows(edge_index, num_nodes: int, nodes: np.ndarray, source
         return np.zeros((sources.size, n))
     up = sp.triu(a, k=1).tocoo()
     m = up.nnz
-    signs = rng.choice([-1.0, 1.0], size=(m, k)) / np.sqrt(k)        # rows of Q^T, one per edge
-    y = np.zeros((n, k))
-    np.add.at(y, up.row, signs)
-    np.add.at(y, up.col, -signs)                                     # Y = B^T Q^T / sqrt(k)
-    lap = (sp.diags(np.asarray(a.sum(axis=1)).ravel()) - a).tocsc()
-    z = np.zeros((n, k))
-    z[:-1] = splu(lap[:-1, :-1].tocsc()).solve(y[:-1])               # ground the last node at 0
+    if solver == "auto":
+        solver = "lu" if n <= LU_MAX_NODES else "cg"
+    if solver == "lu":       # one draw of all m x k signs (the original stream; small graphs)
+        signs = rng.choice([-1.0, 1.0], size=(m, k)) / np.sqrt(k)    # rows of Q^T, one per edge
+        y = np.zeros((n, k))
+        np.add.at(y, up.row, signs)
+        np.add.at(y, up.col, -signs)                                 # Y = B^T Q^T / sqrt(k)
+    else:                    # large graphs: signs in edge chunks, never the whole m x k array (1 GB at m = 528k)
+        y = np.zeros((n, k))
+        for s0 in range(0, m, _RHS_CHUNK):
+            r, c = up.row[s0:s0 + _RHS_CHUNK], up.col[s0:s0 + _RHS_CHUNK]
+            signs = rng.choice([-1.0, 1.0], size=(r.size, k)) / np.sqrt(k)
+            ar = np.arange(r.size)
+            inc = sp.csr_matrix((np.concatenate([np.ones(r.size), -np.ones(r.size)]),
+                                 (np.concatenate([ar, ar]), np.concatenate([r, c]))), shape=(r.size, n))
+            y += np.asarray(inc.T @ signs)
+    lap = (sp.diags(np.asarray(a.sum(axis=1)).ravel()) - a).tocsr()
+    if solver == "lu":
+        z = np.zeros((n, k))
+        z[:-1] = splu(lap[:-1, :-1].tocsc()).solve(y[:-1])           # ground the last node at 0
+    elif solver == "cg":
+        z = _block_pcg(lap, y)
+    else:
+        raise ValueError(f"solver must be 'auto', 'lu' or 'cg', got {solver!r}")
     sq = np.einsum("nk,nk->n", z, z)
     r = np.maximum(sq[sources][:, None] + sq[None, :] - 2.0 * z[sources] @ z.T, 0.0)
     r[np.arange(sources.size), sources] = 0.0

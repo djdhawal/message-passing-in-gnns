@@ -12,6 +12,9 @@ Whole parts are then assigned to train / val / test (`split_parts`), so the core
 the three splits are disjoint and neither labels nor features of other splits are used...
 unless `halo_hops > 0`: then each part is extended by the nodes within that many hops (from any
 split, features only, y_mask False). Everything is deterministic given `seed`.
+
+Full-graph (transductive) mode uses `label_parts`: the same METIS parts and split assignment, but
+only as per-split label masks over the whole graph (no subgraphs are cut).
 """
 from __future__ import annotations
 
@@ -187,3 +190,18 @@ def make_subgraphs(edge_index, num_nodes: int, size: int, seed: int = 0, sampler
             rows.append({"nodes": nodes, "core": mask, "edge_index": induced_edges(adj, nodes), "part": int(p)})
         out[split] = rows
     return out
+
+
+def label_parts(edge_index, num_nodes: int, size: int, seed: int = 0, val_frac: float = 0.15,
+                test_frac: float = 0.15, max_subgraphs: int = 0, use_metis: Optional[bool] = None) -> dict:
+    """Labelled-node masks for full-graph (transductive) training.
+
+    Same parts (`partition` with sampler "partition") and split assignment (`split_parts`) as
+    `make_subgraphs`, so a split seed labels the same nodes in both modes. Returns
+    {"part": part id per node [N], "assign": {split: part ids}, "mask": {split: bool [N]}}; the
+    masks are disjoint (and cover every node unless `max_subgraphs` caps the parts per split).
+    """
+    parts = partition(edge_index, num_nodes, size, seed, "partition", use_metis)
+    assign = split_parts(int(parts.max()) + 1, val_frac, test_frac, seed, max_subgraphs)
+    masks = {split: np.isin(parts, assign[split]) for split in ("train", "val", "test")}
+    return {"part": parts, "assign": assign, "mask": masks}

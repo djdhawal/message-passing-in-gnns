@@ -14,18 +14,34 @@ independently, so it neither mixes nodes nor graphs; Jacobian and isolation
 measurements (done in eval mode) are therefore unaffected by it. In training
 mode BN statistics couple the nodes of a mini-batch, which is the standard GPS
 behaviour.
+
+`RadiusAttn` has two exact implementations of the same function: a dense one (masked
+`nn.MultiheadAttention` on the padded batch, for subgraphs) and a sparse one over the k-hop
+pair list (`hop_pairs`, softmax per query with `torch_geometric.utils.softmax`), picked
+automatically when B * Nmax^2 exceeds `RADIUS_DENSE_MAX_ELEMENTS` (full-graph runs).
 """
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
 from typing import Optional, Union
 
+import numpy as np
+import scipy.sparse as sp
 import torch
 from torch import Tensor, nn
 from torch_geometric.nn import GCNConv, GINEConv
+from torch_geometric.utils import softmax as segment_softmax
 from torch_geometric.utils import to_dense_adj, to_dense_batch
 
 ATTN_TYPES = ("softmax", "performer", "radius")
+
+# RadiusAttn: above this many dense mask entries (B * Nmax^2) the sparse pair-list path is used.
+# Higgs 500-node subgraphs at batch 8 (2M) stay dense; a 35k-node full graph (1.3e9) goes sparse.
+RADIUS_DENSE_MAX_ELEMENTS = 16_000_000
+DEFAULT_MAX_PAIRS = 20_000_000        # ModelConfig.attn_max_pairs default
+_PAIR_CACHE: "OrderedDict[tuple, Tensor]" = OrderedDict()
+_PAIR_CACHE_SIZE = 4
 LOCAL_TYPES = ("gine", "gcn")
 
 
@@ -94,6 +110,91 @@ def hop_reach(edge_index: Tensor, batch: Tensor, radius: int, max_nodes: int) ->
     return reach
 
 
+def _edge_key(edge_index: Tensor, num_nodes: int) -> tuple:
+    """Structure fingerprint of an edge_index (shape, node count and two checksums).
+
+    Datasets clone their graphs on every access, so tensor identity / data_ptr cannot key the cache."""
+    if edge_index.numel() == 0:
+        return (int(num_nodes), 0, 0, 0, str(edge_index.device))
+    e = edge_index.to(torch.int64)
+    s1 = int(e[0].sum() * 1_000_003 + e[1].sum())
+    s2 = int(((e[0] % 9_973 + 1) * (e[1] % 10_007 + 3)).sum())
+    return (int(num_nodes), int(e.size(1)), s1, s2, str(edge_index.device))
+
+
+def hop_pairs(edge_index: Tensor, num_nodes: int, radius: int, max_pairs: int = DEFAULT_MAX_PAIRS,
+              batch: Optional[Tensor] = None) -> Tensor:
+    """[2, P] long (query i, key j) pairs with j within `radius` hops of i (diagonal included),
+    sorted by query then key, on edge_index's device. Structure only, cached per graph.
+
+    Hops follow `edge_index` treated as undirected; batched graphs have no edges between them, so
+    no cross-graph pairs arise. radius < 0 gives every same-graph pair (needs `batch`). Raises
+    ValueError as soon as the count exceeds `max_pairs` (checked in row chunks, before the full
+    list is materialised).
+    """
+    n = int(num_nodes)
+    key = (_edge_key(edge_index, n), int(radius), int(max_pairs),
+           None if radius >= 0 or batch is None else int(batch.max()) + 1)
+    hit = _PAIR_CACHE.get(key)
+    if hit is not None:
+        _PAIR_CACHE.move_to_end(key)
+        return hit
+
+    def too_many(count: int) -> ValueError:
+        return ValueError(
+            f"RadiusAttn: the {'all-pairs' if radius < 0 else f'{radius}-hop'} pair list on a {n}-node graph "
+            f"has more than model.attn_max_pairs={max_pairs:,} pairs (>= {count:,}); lower model.attn_radius, "
+            f"raise model.attn_max_pairs (GPU memory grows ~linearly in the pairs) or use model.attn=performer")
+
+    if radius < 0:
+        if batch is None:
+            raise ValueError("hop_pairs with radius < 0 needs the batch vector")
+        b = batch.detach().cpu().numpy()
+        counts = np.bincount(b)
+        total = int((counts.astype(np.int64) ** 2).sum())
+        if total > max_pairs:
+            raise too_many(total)
+        starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+        order = np.argsort(b, kind="stable")
+        rows, cols = [], []
+        for s0, c in zip(starts, counts):
+            idx = order[s0:s0 + c]
+            rows.append(np.repeat(idx, c))
+            cols.append(np.tile(idx, c))
+        qi, kj = np.concatenate(rows), np.concatenate(cols)
+    else:
+        ei = edge_index.detach().cpu().numpy()
+        a = sp.csr_matrix((np.ones(ei.shape[1], dtype=np.float32), (ei[0], ei[1])), shape=(n, n))
+        m = (a + a.T + sp.eye(n, dtype=np.float32, format="csr")).tocsr()
+        m.data[:] = 1.0
+        reach = sp.eye(n, dtype=np.float32, format="csr")
+        chunk = max(1, min(n, 2_000_000 // max(1, int(m.nnz / max(n, 1)) ** 2 + 1)))
+        for _ in range(int(radius)):
+            parts, count = [], 0
+            for s0 in range(0, n, chunk):
+                blk = reach[s0:s0 + chunk] @ m
+                count += blk.nnz
+                if count > max_pairs:
+                    raise too_many(count)
+                parts.append(blk)
+            nxt = sp.vstack(parts).tocsr()
+            if nxt.nnz == reach.nnz:                     # converged: whole components
+                break
+            reach = nxt
+        if reach.nnz > max_pairs:
+            raise too_many(reach.nnz)
+        reach.sort_indices()
+        coo = reach.tocoo()
+        qi, kj = coo.row, coo.col
+        order = np.lexsort((kj, qi))
+        qi, kj = qi[order], kj[order]
+    pairs = torch.from_numpy(np.stack([qi, kj]).astype(np.int64)).to(edge_index.device)
+    _PAIR_CACHE[key] = pairs
+    while len(_PAIR_CACHE) > _PAIR_CACHE_SIZE:
+        _PAIR_CACHE.popitem(last=False)
+    return pairs
+
+
 class RadiusAttn(GlobalAttn):
     """Softmax attention restricted to nodes within `radius` hops (same graph).
 
@@ -103,11 +204,31 @@ class RadiusAttn(GlobalAttn):
     Cached weights are exactly zero outside the radius.
     """
 
-    def __init__(self, hidden: int, heads: int, attn_dropout: float = 0.0, radius: int = -1):
+    def __init__(self, hidden: int, heads: int, attn_dropout: float = 0.0, radius: int = -1,
+                 max_pairs: int = DEFAULT_MAX_PAIRS, sparse: Optional[bool] = None):
         super().__init__(hidden, heads, attn_dropout)
         self.radius = int(radius)
+        self.max_pairs = int(max_pairs)
+        self.sparse = sparse                      # None = auto by size; True / False force a path
+        self.last_pairs: Optional[Tensor] = None
+        self.last_pair_weights: Optional[Tensor] = None
+        self.last_n_pairs: int = 0
+
+    def clear_cache(self) -> None:
+        super().clear_cache()
+        self.last_pairs = self.last_pair_weights = None
+
+    def use_sparse(self, batch: Tensor) -> bool:
+        if self.sparse is not None:
+            return bool(self.sparse)
+        counts = torch.bincount(batch)
+        return int(counts.numel()) * int(counts.max()) ** 2 > RADIUS_DENSE_MAX_ELEMENTS
 
     def forward(self, x: Tensor, batch: Tensor, edge_index: Optional[Tensor] = None) -> Tensor:
+        if x.size(0) > 0 and self.use_sparse(batch):
+            if edge_index is None and self.radius >= 0:
+                raise ValueError("RadiusAttn needs edge_index")
+            return self._sparse_forward(x, batch, edge_index)
         if self.radius < 0:
             return super().forward(x, batch)
         if edge_index is None:
@@ -121,10 +242,34 @@ class RadiusAttn(GlobalAttn):
         attn_mask = (~allowed).repeat_interleave(self.heads, dim=0)            # [B*heads, N, N], True = blocked
         out, w = self.attn(dense, dense, dense, attn_mask=attn_mask, need_weights=self.cache,
                            average_attn_weights=False)
+        self.last_n_pairs = int(allowed.sum())
         if self.cache:
             self.last_weights = (w * mask[:, None, :, None]).detach()
             self.last_mask = mask.detach()
         return out[mask]
+
+    def _sparse_forward(self, x: Tensor, batch: Tensor, edge_index: Optional[Tensor]) -> Tensor:
+        """Same function as the dense path (same nn.MultiheadAttention weights), over the k-hop pair
+        list: per-pair scores q_i . k_j / sqrt(d), softmax over each query's pairs, weighted sum of v_j.
+        With cache on, stores `last_pairs` [2, P] and `last_pair_weights` [P, heads] (last_weights None)."""
+        n, hidden = x.shape
+        d = hidden // self.heads
+        ei = edge_index if edge_index is not None else torch.zeros(2, 0, dtype=torch.long, device=x.device)
+        pairs = hop_pairs(ei, n, self.radius, self.max_pairs, batch=batch)
+        qi, kj = pairs[0], pairs[1]
+        mha = self.attn
+        qkv = nn.functional.linear(x, mha.in_proj_weight, mha.in_proj_bias)
+        q, k, v = qkv.view(n, 3, self.heads, d).unbind(1)                      # [N, H, d] each
+        scores = (q[qi] * k[kj]).sum(-1) * (d ** -0.5)                         # [P, H]
+        w = segment_softmax(scores, qi, num_nodes=n)
+        self.last_n_pairs = int(qi.numel())
+        if self.cache:
+            self.last_pairs, self.last_pair_weights = pairs, w.detach()
+            self.last_weights = self.last_mask = None
+        w = nn.functional.dropout(w, p=mha.dropout, training=self.training)
+        out = torch.zeros(n, self.heads, d, dtype=v.dtype, device=x.device)
+        out = out.index_add(0, qi, w[..., None] * v[kj])
+        return mha.out_proj(out.reshape(n, hidden))
 
 
 class GCNLocal(nn.Module):
@@ -295,10 +440,11 @@ class PerformerAttn(AttentionBase):
 
 
 def build_attention(kind: str, hidden: int, heads: int, attn_dropout: float = 0.0,
-                    performer_features: int = 64, radius: int = -1) -> AttentionBase:
+                    performer_features: int = 64, radius: int = -1,
+                    max_pairs: int = DEFAULT_MAX_PAIRS) -> AttentionBase:
     """GlobalAttn for kind="softmax", PerformerAttn for "performer", RadiusAttn for "radius"."""
     if kind == "radius":
-        return RadiusAttn(hidden, heads, attn_dropout, radius)
+        return RadiusAttn(hidden, heads, attn_dropout, radius, max_pairs=max_pairs)
     if kind == "softmax":
         return GlobalAttn(hidden, heads, attn_dropout)
     if kind == "performer":
@@ -329,6 +475,7 @@ class HybridLayer(nn.Module):
         local: str = "gine",
         branch_affine: bool = True,
         attn_radius: int = -1,
+        attn_max_pairs: int = DEFAULT_MAX_PAIRS,
     ):
         super().__init__()
         if local not in LOCAL_TYPES:
@@ -360,7 +507,8 @@ class HybridLayer(nn.Module):
         self.glob: Optional[AttentionBase] = None
         self.norm_glb: Optional[nn.Module] = None
         if alpha > 0.0:
-            self.glob = build_attention(attn, hidden, heads, attn_dropout, performer_features, attn_radius)
+            self.glob = build_attention(attn, hidden, heads, attn_dropout, performer_features, attn_radius,
+                                        attn_max_pairs)
             self.norm_glb = nn.BatchNorm1d(hidden, affine=branch_affine)
 
         self.dropout = nn.Dropout(dropout)

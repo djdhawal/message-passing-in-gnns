@@ -18,6 +18,16 @@ The processed result is cached at `<root>/social/<source>/processed/<key>.pt`, w
 DataConfig field that changes the data (all but root, structure_cache, num_workers) plus
 `PROCESS_VERSION`, so repeated loads are a single torch.load.
 
+Full-graph mode (`data.sampler = "full"`, transductive): the METIS parts (`subgraph_size`,
+`split_seed`, `val_frac`, `test_frac`, `max_subgraphs`) only decide **which nodes are labelled** in
+each split (`subgraph.label_parts`). Each split's dataset is a one-element list holding the **whole
+graph** (same schema as above: node_id = arange(N), graph_id [0]) whose `y_mask` marks that split's
+labelled nodes, so message passing and attention see every node and edge while only train labels
+are trained on. x is standardized with the mean / std of the **train-labelled** nodes. `halo_hops`
+is ignored. RWSE: the dense eigh is not used above `RWSE_DENSE_MAX_NODES` nodes; there
+`rwse_sampled` gives a Monte-Carlo estimate (`RWSE_WALKS` walks per node, std error <= 0.5 /
+sqrt(walks)). The full-graph configs use pe_dim 0, so this is only a fallback.
+
 `social-tiny` is a seeded synthetic SBM (600 nodes, 6 blocks, 8 features) with a binary target
 `label` that depends on the node's own features and on its neighbours' (plus `reg`, `block`), used
 by tests and CPU smoke runs; no download.
@@ -38,9 +48,12 @@ from scipy.stats import skew
 from torch_geometric.data import Data, Dataset
 
 from . import sources
-from .subgraph import make_subgraphs
+from .subgraph import csr_adjacency, label_parts, make_subgraphs
 
 PROCESS_VERSION = 1
+FULL_SAMPLER = "full"
+RWSE_DENSE_MAX_NODES = 5000
+RWSE_WALKS = 256
 _NON_DATA_FIELDS = ("root", "structure_cache", "num_workers")
 
 
@@ -94,6 +107,31 @@ def rwse(edge_index: np.ndarray, n: int, k: int) -> np.ndarray:
     pows = lam[:, None] ** np.arange(1, k + 1)[None, :]
     pe = u2 @ pows
     pe[deg == 0] = 0.0
+    return pe.astype(np.float32)
+
+
+def rwse_sampled(edge_index: np.ndarray, n: int, k: int, walks: int = RWSE_WALKS, seed: int = 0) -> np.ndarray:
+    """Monte-Carlo RWSE [n, k] for large graphs: the fraction of `walks` simple random walks from
+    each node that are back at their start after t = 1..k steps (an unbiased estimate of
+    diag(P^t)). Isolated nodes get 0. Cost O(n * walks * k), memory O(n)."""
+    if k <= 0:
+        return np.zeros((n, 0), dtype=np.float32)
+    adj = csr_adjacency(edge_index, n)
+    indptr, indices = adj.indptr, adj.indices
+    deg = np.diff(indptr)
+    rng = np.random.default_rng(seed)
+    start = np.arange(n)
+    hits = np.zeros((n, k))
+    has = deg > 0
+    for _ in range(walks):
+        pos = start.copy()
+        for t in range(k):
+            d = deg[pos]
+            step = indptr[pos] + (rng.random(n) * np.maximum(d, 1)).astype(np.int64)
+            pos = np.where(d > 0, indices[np.minimum(step, len(indices) - 1)], pos)
+            hits[:, t] += pos == start
+    pe = hits / walks
+    pe[~has] = 0.0
     return pe.astype(np.float32)
 
 
@@ -155,8 +193,11 @@ def build_social(cfg) -> dict:
     target = getattr(cfg, "target", "") or sources.DEFAULT_TARGETS[name]
     graph = sources.load_graph(name, cfg.root)
     n = int(graph.num_nodes)
+    sampler = getattr(cfg, "sampler", "partition")
+    if sampler == FULL_SAMPLER:
+        return _build_full(cfg, name, target, graph, t0)
     subs = make_subgraphs(graph.edge_index.numpy(), n, size=getattr(cfg, "subgraph_size", 2000),
-                          seed=getattr(cfg, "split_seed", 0), sampler=getattr(cfg, "sampler", "partition"),
+                          seed=getattr(cfg, "split_seed", 0), sampler=sampler,
                           val_frac=getattr(cfg, "val_frac", 0.15), test_frac=getattr(cfg, "test_frac", 0.15),
                           halo_hops=getattr(cfg, "halo_hops", 0), max_subgraphs=getattr(cfg, "max_subgraphs", 0))
     train_core = np.zeros(n, dtype=bool)
@@ -170,6 +211,13 @@ def build_social(cfg) -> dict:
 
     meta: dict = {"dataset": name, "target": target, "task": task, "feat_names": feat_names,
                   "n_nodes_full": n, "n_edges_full": int(graph.edge_index.size(1) // 2)}
+    y, has, out_dim = _encode_target(y_raw, task, train_core, meta)
+    return _finish_subgraphs(cfg, subs, x, y, has, out_dim, task, meta, t0)
+
+
+def _encode_target(y_raw, task: str, train_core: np.ndarray, meta: dict) -> tuple[np.ndarray, np.ndarray, int]:
+    """(y [N] float32 / int64, has-label [N] bool, out_dim); regression stats from train-labelled nodes."""
+    n = len(train_core)
     if task == "multiclass":
         labels = np.asarray(y_raw).astype(str)
         classes = np.unique(labels)
@@ -190,7 +238,10 @@ def build_social(cfg) -> dict:
             y = (y - ymu) / ysd
             meta.update(y_log1p=log, y_mean=float(ymu), y_std=float(ysd))
         y = np.where(has, y, 0.0).astype(np.float32)
+    return y, has, out_dim
 
+
+def _finish_subgraphs(cfg, subs, x, y, has, out_dim, task, meta, t0) -> dict:
     pe_dim = int(cfg.pe_dim)
     splits: dict[str, list[Data]] = {}
     for split, rows in subs.items():
@@ -215,6 +266,50 @@ def build_social(cfg) -> dict:
                        "n_labelled": int(m.sum()), "n_edges": int(sum(g.edge_index.size(1) for g in graphs) // 2)}
         if task == "binary" and yy.numel():
             meta[split]["pos_rate"] = float(yy.float().mean())
+    meta["seconds"] = round(time.time() - t0, 1)
+    info = {"out_dim": out_dim, "pe_dim": pe_dim, "task": task, "feat_dim": int(x.shape[1])}
+    return {"splits": splits, "info": info, "meta": meta}
+
+
+def _build_full(cfg, name: str, target: str, graph, t0: float) -> dict:
+    """Full-graph (transductive) splits: one whole-graph `Data` per split, y_mask = that split's labelled nodes."""
+    n = int(graph.num_nodes)
+    ei = graph.edge_index.numpy()
+    lab = label_parts(ei, n, size=getattr(cfg, "subgraph_size", 2000), seed=getattr(cfg, "split_seed", 0),
+                      val_frac=getattr(cfg, "val_frac", 0.15), test_frac=getattr(cfg, "test_frac", 0.15),
+                      max_subgraphs=getattr(cfg, "max_subgraphs", 0))
+    train_core = lab["mask"]["train"]
+    y_raw, task = sources.node_target(name, graph, target)
+    x_raw, feat_names = sources.node_inputs(name, graph, target, fit_mask=train_core)
+    meta: dict = {"dataset": name, "target": target, "task": task, "feat_names": feat_names, "sampler": FULL_SAMPLER,
+                  "n_nodes_full": n, "n_edges_full": int(ei.shape[1] // 2), "n_parts": int(lab["part"].max()) + 1}
+    y, has, out_dim = _encode_target(y_raw, task, train_core, meta)
+    fit = train_core & has
+    mu, sd = _standardize_stats(x_raw[fit])
+    x = torch.from_numpy(((x_raw - mu) / sd).astype(np.float32))
+
+    pe_dim = int(cfg.pe_dim)
+    pe = None
+    if pe_dim > 0:
+        pe = rwse(ei, n, pe_dim) if n <= RWSE_DENSE_MAX_NODES else rwse_sampled(ei, n, pe_dim)
+        pe = torch.from_numpy(pe)
+        meta["rwse"] = "dense" if n <= RWSE_DENSE_MAX_NODES else f"sampled ({RWSE_WALKS} walks)"
+    edge_index = torch.from_numpy(np.ascontiguousarray(ei, dtype=np.int64))
+    edge_attr = torch.zeros((ei.shape[1], 1), dtype=torch.long)
+    y_t = torch.from_numpy(y)
+    node_id = torch.arange(n, dtype=torch.long)
+    splits: dict[str, list[Data]] = {}
+    for split in ("train", "val", "test"):
+        mask = lab["mask"][split] & has
+        d = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y_t, y_mask=torch.from_numpy(mask),
+                 node_id=node_id, graph_id=torch.zeros(1, dtype=torch.long), num_nodes=n)
+        if pe is not None:
+            d.pe = pe
+        splits[split] = [d]
+        meta[split] = {"n_subgraphs": 1, "n_parts": int(len(lab["assign"][split])), "n_nodes": n,
+                       "n_labelled": int(mask.sum()), "n_edges": int(ei.shape[1] // 2)}
+        if task == "binary" and mask.any():
+            meta[split]["pos_rate"] = float(y[mask].mean())
     meta["seconds"] = round(time.time() - t0, 1)
     info = {"out_dim": out_dim, "pe_dim": pe_dim, "task": task, "feat_dim": int(x.shape[1])}
     return {"splits": splits, "info": info, "meta": meta}

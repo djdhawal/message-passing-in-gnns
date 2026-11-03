@@ -24,7 +24,8 @@ class DataConfig:
     # Social-graph (node-level) datasets; see docs/social_plan.md "Build contract".
     target: str = ""                  # dataset-specific target name; "" = dataset default
     subgraph_size: int = 2000         # target nodes per subgraph (core, before halo)
-    sampler: str = "partition"        # "partition" (METIS, fallback BFS-grown parts) | "bfs"
+    sampler: str = "partition"        # "partition" (METIS, fallback BFS-grown parts) | "bfs" | "full" (transductive:
+                                      # whole graph per split, parts only choose the labelled nodes)
     halo_hops: int = 0                # context-only hops around each core (y_mask False); 0 = strict
     val_frac: float = 0.15            # fraction of subgraphs (whole parts) per split; train gets the rest
     test_frac: float = 0.15
@@ -53,6 +54,8 @@ class ModelConfig:
                                       # | "radius" (RadiusAttn: softmax masked to attn_radius hops)
     performer_features: int = 64      # FAVOR+ random features m per head
     attn_radius: int = -1             # attn="radius": attend only to nodes within this many hops (-1 = whole graph)
+    attn_max_pairs: int = 20_000_000  # attn="radius", sparse path (large graphs): max k-hop (query, key) pairs
+                                      # per forward; more raises a ValueError instead of running out of memory
     branch_affine: bool = True        # learnable affine in the two branch norms. False makes alpha a real,
                                       # fixed mixing weight (with affine on, alpha is absorbed by the norm scales)
 
@@ -137,7 +140,7 @@ _ADDED_FIELDS = {
     "data": ("target", "subgraph_size", "sampler", "halo_hops", "val_frac", "test_frac", "split_seed",
              "max_subgraphs"),
     "model": ("act", "norm", "head_layers", "attn", "performer_features", "attn_radius",
-              "branch_affine"),
+              "branch_affine", "attn_max_pairs"),
     "measure": ("n_graphs_range", "sources_per_graph", "hessian_channels", "entropy_queries"),
 }
 
