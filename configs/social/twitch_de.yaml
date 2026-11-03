@@ -1,0 +1,46 @@
+# S2 twitch-de (SNAP twitch-social-networks / musae, German graph): 9,498 users, 153,138 edges.
+# Target (default): `mature` (binary, ~61% positive). Inputs: multi-hot game features reduced to the
+# K = 128 most frequent games (sources.MUSAE_TOP_K), n_games, days, partner, log1p(views) (132 features).
+# subgraph_size 500 (not 2000): 9.5k nodes would give only 1 val and 1 test subgraph; 500 gives 13 / 3 / 3.
+# Sweep: configs/sweeps/social_s2_twitch_de.yaml.
+exp_name: social_s2_twitch_de
+out_dir: ./runs
+seed: 0
+data:
+  name: twitch-de
+  root: ./data
+  pe_dim: 16
+  target: ""
+  subgraph_size: 500
+  sampler: partition
+  halo_hops: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  split_seed: 0
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 64
+  local: gine
+  alpha: 0.5
+  hidden: 64
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 100
+  batch_size: 8
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 5
+  grad_clip: 1.0
+  patience: 20
+  checkpoint_every: 5
+measure:
+  n_graphs_jacobian: 20
+  targets_per_graph: 8
+  pairs_per_graph: 32
+  n_graphs_entropy: 20
+  entropy_queries: 64
+  n_graphs_range: 0

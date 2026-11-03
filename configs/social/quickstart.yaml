@@ -1,0 +1,46 @@
+# Quickstart: one short twitch-gamers run (target `mature`), alpha 0.5, Performer attention.
+# max_subgraphs 8 caps every split at 8 subgraphs of ~2000 nodes (8 / 8 / 8) after the full METIS
+# split, so labels and features stay disjoint across splits. 20 epochs; aims at <= 15 min on a Colab
+# T4 including the 28 MB download (~10 s), parsing (~6 s) and partitioning (~40 s).
+exp_name: social_quickstart
+out_dir: ./runs
+seed: 0
+data:
+  name: twitch-gamers
+  root: ./data
+  pe_dim: 16
+  target: ""
+  subgraph_size: 2000
+  sampler: partition
+  halo_hops: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  split_seed: 0
+  max_subgraphs: 8
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 64
+  local: gine
+  alpha: 0.5
+  hidden: 64
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 20
+  batch_size: 8
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 5
+  grad_clip: 1.0
+  patience: 0
+  checkpoint_every: 5
+measure:
+  n_graphs_jacobian: 4
+  targets_per_graph: 8
+  pairs_per_graph: 32
+  n_graphs_entropy: 8
+  entropy_queries: 64
+  n_graphs_range: 0

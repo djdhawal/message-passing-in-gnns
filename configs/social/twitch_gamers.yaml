@@ -1,0 +1,47 @@
+# S2 twitch-gamers (SNAP twitch_gamers): 168,114 users, 6.80M undirected mutual-follow edges.
+# Target (default, data.target=""): `mature` (binary, ~47% positive). Inputs: log1p(views), life_time,
+# created_at, updated_at (days since 1970), dead_account, affiliate, one-hot language (27 features);
+# numeric_id dropped. Other targets: views, life_time, affiliate, dead_account, language.
+# METIS parts of ~2000 nodes -> 58 / 13 / 13 train / val / test subgraphs (disjoint node sets);
+# ~26% of edges fall inside parts. Swept over alpha by configs/sweeps/social_s2_twitch_gamers.yaml.
+exp_name: social_s2_twitch_gamers
+out_dir: ./runs
+seed: 0
+data:
+  name: twitch-gamers
+  root: ./data
+  pe_dim: 16
+  target: ""
+  subgraph_size: 2000
+  sampler: partition
+  halo_hops: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  split_seed: 0
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 64
+  local: gine
+  alpha: 0.5
+  hidden: 64
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 100
+  batch_size: 8
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 5
+  grad_clip: 1.0
+  patience: 20
+  checkpoint_every: 5
+measure:
+  n_graphs_jacobian: 20
+  targets_per_graph: 8
+  pairs_per_graph: 32
+  n_graphs_entropy: 20
+  entropy_queries: 64
+  n_graphs_range: 0

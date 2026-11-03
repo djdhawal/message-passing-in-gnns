@@ -1,0 +1,47 @@
+# S2 reddit-body (SNAP soc-redditHyperlinks body): 35,776 subreddits, 124,330 undirected links.
+# Target (default): `LIWC_Money` (regression; log1p + standardized with train stats), chosen by
+# gnn_mech.reddit.target_select on the real graph: rank 1 by multi-hop gain (ridge own R2 0.108 ->
+# own+4 hops 0.185). Inputs: the other 85 post properties minus |r| > 0.9 to the target (train nodes),
+# is_source, log out/in post counts. Subreddits without outgoing posts: y_mask False.
+# 12 / 3 / 3 subgraphs of ~2000 nodes. Sweep: configs/sweeps/social_s2_reddit_body.yaml.
+exp_name: social_s2_reddit_body
+out_dir: ./runs
+seed: 0
+data:
+  name: reddit-body
+  root: ./data
+  pe_dim: 16
+  target: ""
+  subgraph_size: 2000
+  sampler: partition
+  halo_hops: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  split_seed: 0
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 64
+  local: gine
+  alpha: 0.5
+  hidden: 64
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 100
+  batch_size: 8
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 5
+  grad_clip: 1.0
+  patience: 20
+  checkpoint_every: 5
+measure:
+  n_graphs_jacobian: 20
+  targets_per_graph: 8
+  pairs_per_graph: 32
+  n_graphs_entropy: 20
+  entropy_queries: 64
+  n_graphs_range: 0

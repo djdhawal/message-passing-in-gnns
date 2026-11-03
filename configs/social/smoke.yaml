@@ -1,0 +1,30 @@
+# CPU smoke test on social-tiny (synthetic SBM, 600 nodes, no download): node-level hybrid with
+# Performer attention. subgraph_size 50 -> 12 METIS parts (8 / 2 / 2). Target `label` (binary).
+exp_name: social_smoke
+out_dir: ./runs
+seed: 0
+data:
+  name: social-tiny
+  root: ./data
+  pe_dim: 8
+  subgraph_size: 50
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 16
+  alpha: 0.5
+  hidden: 32
+  layers: 2
+  heads: 2
+train:
+  epochs: 3
+  batch_size: 4
+  warmup_epochs: 1
+  checkpoint_every: 1
+measure:
+  n_graphs_jacobian: 2
+  targets_per_graph: 2
+  pairs_per_graph: 4
+  n_graphs_entropy: 2
+  entropy_queries: 8
+  n_graphs_range: 0

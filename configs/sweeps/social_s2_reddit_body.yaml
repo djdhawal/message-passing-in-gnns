@@ -1,0 +1,42 @@
+# S2 alpha sweep on reddit_body (docs/social_plan.md S2): alpha in {0, .25, .5, .75, 1} x 3 seeds,
+# plus MLP (no graph) and GCN baselines. All runs share exp_name from the config and differ by
+# config hash, so this file never shares a run directory with another dataset's sweep.
+#   python -m gnn_mech.sweep configs/sweeps/social_s2_reddit_body.yaml [--dry-run] out_dir=<drive>/runs
+# est_minutes: rough Colab T4 training minutes per seed (re-estimate after the first runs).
+measure_minutes: 3
+runs:
+  - name: alpha0.0
+    config: configs/social/reddit_body.yaml
+    overrides: [model.alpha=0.0]
+    seeds: [0, 1, 2]
+    est_minutes: 5
+  - name: alpha0.25
+    config: configs/social/reddit_body.yaml
+    overrides: [model.alpha=0.25]
+    seeds: [0, 1, 2]
+    est_minutes: 5
+  - name: alpha0.5
+    config: configs/social/reddit_body.yaml
+    overrides: [model.alpha=0.5]
+    seeds: [0, 1, 2]
+    est_minutes: 5
+  - name: alpha0.75
+    config: configs/social/reddit_body.yaml
+    overrides: [model.alpha=0.75]
+    seeds: [0, 1, 2]
+    est_minutes: 5
+  - name: alpha1.0
+    config: configs/social/reddit_body.yaml
+    overrides: [model.alpha=1.0]
+    seeds: [0, 1, 2]
+    est_minutes: 5
+  - name: mlp
+    config: configs/social/reddit_body.yaml
+    overrides: [model.arch=mlp]
+    seeds: [0, 1, 2]
+    est_minutes: 1
+  - name: gcn
+    config: configs/social/reddit_body.yaml
+    overrides: [model.arch=gcn]
+    seeds: [0, 1, 2]
+    est_minutes: 3

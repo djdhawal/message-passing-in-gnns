@@ -1,0 +1,48 @@
+# S2 higgs-follow (SNAP higgs-twitter, follower layer). Node set: the 35,593 users involved in any
+# RT/MT/RE interaction strictly before the cutoff 2012-07-04 00:00 UTC; follow graph induced on them
+# (528,532 undirected edges). Target (default): `active_after` (binary, ~48% positive) = the user
+# retweets / mentions / replies at or after the cutoff. Inputs (11, log1p): follow in/out degree and
+# pre-cutoff RT/MT/RE out-count, in-count and distinct partners. No post-cutoff information in nodes,
+# graph or inputs (see gnn_mech/social/sources.py docstring; checked at build time).
+# 12 / 3 / 3 subgraphs of ~2000 nodes. Sweep: configs/sweeps/social_s2_higgs_follow.yaml.
+exp_name: social_s2_higgs_follow
+out_dir: ./runs
+seed: 0
+data:
+  name: higgs-follow
+  root: ./data
+  pe_dim: 16
+  target: ""
+  subgraph_size: 2000
+  sampler: partition
+  halo_hops: 0
+  val_frac: 0.15
+  test_frac: 0.15
+  split_seed: 0
+model:
+  arch: hybrid
+  attn: performer
+  performer_features: 64
+  local: gine
+  alpha: 0.5
+  hidden: 64
+  layers: 4
+  heads: 4
+  dropout: 0.1
+  attn_dropout: 0.1
+train:
+  epochs: 100
+  batch_size: 8
+  lr: 1.0e-3
+  weight_decay: 0.0
+  warmup_epochs: 5
+  grad_clip: 1.0
+  patience: 20
+  checkpoint_every: 5
+measure:
+  n_graphs_jacobian: 20
+  targets_per_graph: 8
+  pairs_per_graph: 32
+  n_graphs_entropy: 20
+  entropy_queries: 64
+  n_graphs_range: 0
