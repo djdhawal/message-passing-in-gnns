@@ -21,13 +21,22 @@ class DataConfig:
     pe_dim: int = 20                  # RWSE walk length; 0 disables positional encoding
     structure_cache: Optional[str] = None  # dir for cached per-graph stats; defaults to <root>/structure
     num_workers: int = 0
+    # Social-graph (node-level) datasets; see docs/social_plan.md "Build contract".
+    target: str = ""                  # dataset-specific target name; "" = dataset default
+    subgraph_size: int = 2000         # target nodes per subgraph (core, before halo)
+    sampler: str = "partition"        # "partition" (METIS, fallback BFS-grown parts) | "bfs"
+    halo_hops: int = 0                # context-only hops around each core (y_mask False); 0 = strict
+    val_frac: float = 0.15            # fraction of subgraphs (whole parts) per split; train gets the rest
+    test_frac: float = 0.15
+    split_seed: int = 0               # partition/split seed, fixed across model seeds
+    max_subgraphs: int = 0            # 0 = all; else cap per split (quick runs), applied after splitting
 
 
 @dataclass
 class ModelConfig:
     alpha: Union[float, str] = 0.5    # 0 = pure MPNN, 1 = pure attention; "learned" reserved for later phases
     local: str = "gine"               # local branch: "gine" (edge-aware); "gcn" is a separate baseline model
-    arch: str = "hybrid"              # "hybrid" (HybridGNN) or "gcn" (Tönshoff-style GCN baseline)
+    arch: str = "hybrid"              # "hybrid" (HybridGNN), "gcn" (Tönshoff-style GCN) or "mlp" (no graph)
     hidden: int = 96
     layers: int = 5
     heads: int = 4
@@ -39,6 +48,8 @@ class ModelConfig:
     act: str = "relu"                 # GCN nonlinearity: "relu" | "gelu"
     norm: str = "batch"               # GCN per-layer norm: "batch" | "none"
     head_layers: int = 2              # Linear layers in the graph-level MLP head (both models)
+    attn: str = "softmax"             # global branch: "softmax" (GlobalAttn) | "performer" (PerformerAttn)
+    performer_features: int = 64      # FAVOR+ random features m per head
 
 
 @dataclass
@@ -73,6 +84,7 @@ class MeasureConfig:
     n_graphs_range: int = 30
     sources_per_graph: int = 4
     hessian_channels: int = 16        # source-side h0 channels sampled per graph (0 = all D0)
+    entropy_queries: int = 64         # Performer: sampled query nodes per graph for implicit-row entropy
     seed: int = 0
 
 
@@ -117,8 +129,10 @@ _SECTIONS = {"data": DataConfig, "model": ModelConfig, "train": TrainConfig, "me
 
 # Fields added after Phase 1 runs were written; omitted from Config.hash() at their default.
 _ADDED_FIELDS = {
-    "model": ("act", "norm", "head_layers"),
-    "measure": ("n_graphs_range", "sources_per_graph", "hessian_channels"),
+    "data": ("target", "subgraph_size", "sampler", "halo_hops", "val_frac", "test_frac", "split_seed",
+             "max_subgraphs"),
+    "model": ("act", "norm", "head_layers", "attn", "performer_features"),
+    "measure": ("n_graphs_range", "sources_per_graph", "hessian_channels", "entropy_queries"),
 }
 
 

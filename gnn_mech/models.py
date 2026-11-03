@@ -1,10 +1,14 @@
-"""Graph-level models: alpha-blended hybrid GNN and a Tönshoff-style GCN baseline.
+"""Models: alpha-blended hybrid GNN, a Tönshoff-style GCN baseline and a no-graph MLP.
 
-Both expose the same API so training and measurement code is model-agnostic:
+All expose the same API so training and measurement code is model-agnostic:
 `embed_inputs` (batch -> h0), `node_embeddings_from_h0` (a pure function of h0
 given the batch structure, so Jacobians w.r.t. h0 are meaningful),
-`node_embeddings`, `forward_from_h0` / `forward` (graph logits),
+`node_embeddings`, `forward_from_h0` / `forward` (logits),
 `attention_layers` and `set_attention_cache`.
+
+Task level (`info.task_level`, stored as `model.task_level`): "graph" pools the node
+representations and applies the MLP head ([B, out_dim] logits); "node" applies the
+same MLP head to every node, with no pooling ([N, out_dim] logits).
 """
 from __future__ import annotations
 
@@ -16,7 +20,7 @@ from torch_geometric.nn import GCNConv, global_add_pool, global_mean_pool
 from .config import ModelConfig
 from .data import DataInfo
 from .encoders import CategoricalEncoder, InputEncoder
-from .layers import GlobalAttn, HybridLayer
+from .layers import AttentionBase, HybridLayer
 
 _POOLS = {"mean": global_mean_pool, "add": global_add_pool}
 _ACTS = {"relu": nn.ReLU, "gelu": nn.GELU}
@@ -52,11 +56,17 @@ def _pool_fn(name: str):
     return _POOLS[name]
 
 
+_TASK_LEVELS = ("graph", "node")
+
+
 class _GraphModel(nn.Module):
-    """Shared encode -> node reps -> pool -> head plumbing."""
+    """Shared encode -> node reps -> (pool) -> head plumbing."""
 
     def __init__(self, cfg: ModelConfig, info: DataInfo, head_act: str = "relu"):
         super().__init__()
+        self.task_level = getattr(info, "task_level", "graph")
+        if self.task_level not in _TASK_LEVELS:
+            raise ValueError(f"task_level must be one of {_TASK_LEVELS}, got {self.task_level!r}")
         self.input_encoder = InputEncoder(info, cfg.hidden)
         self.pool = _pool_fn(cfg.pool)
         self.head = _mlp_head(cfg.hidden, info.out_dim, cfg.dropout, cfg.head_layers, head_act)
@@ -71,22 +81,25 @@ class _GraphModel(nn.Module):
         return self.node_embeddings_from_h0(self.embed_inputs(batch), batch)
 
     def forward_from_h0(self, h0: Tensor, batch) -> Tensor:
-        """Graph logits [B, out_dim] as a function of h0 (graph-level range Hessians)."""
+        """Logits as a function of h0: [B, out_dim] at graph level (graph-level range
+        Hessians), [N, out_dim] at node level."""
         h = self.node_embeddings_from_h0(h0, batch)
+        if self.task_level == "node":
+            return self.head(h)
         return self.head(self.pool(h, _batch_vector(batch)))
 
     def forward(self, batch) -> Tensor:
         return self.forward_from_h0(self.embed_inputs(batch), batch)
 
-    def attention_layers(self) -> list[GlobalAttn]:
-        return [m for m in self.modules() if isinstance(m, GlobalAttn)]
+    def attention_layers(self) -> list[AttentionBase]:
+        """GlobalAttn and PerformerAttn modules, in layer order."""
+        return [m for m in self.modules() if isinstance(m, AttentionBase)]
 
     def set_attention_cache(self, on: bool) -> None:
         for m in self.attention_layers():
             m.cache = on
             if not on:
-                m.last_weights = None
-                m.last_mask = None
+                m.clear_cache()
 
 
 class HybridGNN(_GraphModel):
@@ -98,7 +111,8 @@ class HybridGNN(_GraphModel):
             raise ValueError(f"HybridGNN supports local='gine' only, got {cfg.local!r}")
         self.edge_encoder = CategoricalEncoder(info.edge_vocab, cfg.hidden)
         self.layers = nn.ModuleList(
-            HybridLayer(cfg.hidden, cfg.heads, cfg.alpha, cfg.dropout, cfg.attn_dropout, edge_dim=cfg.hidden)
+            HybridLayer(cfg.hidden, cfg.heads, cfg.alpha, cfg.dropout, cfg.attn_dropout, edge_dim=cfg.hidden,
+                        attn=cfg.attn, performer_features=cfg.performer_features)
             for _ in range(cfg.layers)
         )
 
@@ -137,12 +151,42 @@ class GCNBaseline(_GraphModel):
         return x
 
 
+class MLPBaseline(_GraphModel):
+    """No-graph baseline: InputEncoder -> L x residual [Linear -> BatchNorm -> ReLU -> Dropout] -> head.
+
+    No message passing and no attention: each node's representation depends on its own
+    h0 only (edges are ignored; graph-level runs still mean-pool before the head).
+    `cfg.norm` ("batch" | "none") and `cfg.act` apply as in the GCN baseline.
+    """
+
+    def __init__(self, cfg: ModelConfig, info: DataInfo):
+        super().__init__(cfg, info, head_act=cfg.act)
+        if cfg.norm not in ("batch", "none"):
+            raise ValueError(f"norm must be 'batch' or 'none', got {cfg.norm!r}")
+        self.dropout = cfg.dropout
+        self.act = _act(cfg.act)
+        self.lins = nn.ModuleList(nn.Linear(cfg.hidden, cfg.hidden) for _ in range(cfg.layers))
+        self.norms = nn.ModuleList(
+            nn.BatchNorm1d(cfg.hidden) if cfg.norm == "batch" else nn.Identity() for _ in range(cfg.layers))
+
+    def node_embeddings_from_h0(self, h0: Tensor, batch) -> Tensor:
+        x = h0
+        for lin, norm in zip(self.lins, self.norms):
+            x = x + F.dropout(self.act(norm(lin(x))), p=self.dropout, training=self.training)
+        return x
+
+
+ARCHS = ("hybrid", "gcn", "mlp")
+
+
 def build_model(cfg: ModelConfig, info: DataInfo) -> nn.Module:
     if cfg.arch == "hybrid":
         return HybridGNN(cfg, info)
     if cfg.arch == "gcn":
         return GCNBaseline(cfg, info)
-    raise ValueError(f"unknown model arch {cfg.arch!r} (expected 'hybrid' or 'gcn')")
+    if cfg.arch == "mlp":
+        return MLPBaseline(cfg, info)
+    raise ValueError(f"unknown model arch {cfg.arch!r} (expected one of {ARCHS})")
 
 
 def count_parameters(model: nn.Module) -> int:

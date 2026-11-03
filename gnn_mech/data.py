@@ -47,11 +47,13 @@ SPLITS = ("train", "val", "test")
 
 @dataclass
 class DataInfo:
-    node_vocab: list[int]     # vocabulary size of each categorical node column
-    edge_vocab: list[int]     # vocabulary size of each categorical edge column
-    out_dim: int
+    node_vocab: list[int]     # vocabulary size of each categorical node column ([] for social graphs)
+    edge_vocab: list[int]     # vocabulary size of each categorical edge column (social: [1])
+    out_dim: int              # graph level: n targets; node level: 1 (binary/regression) or n_classes
     pe_dim: int
-    task: str                 # "multilabel" (AP metric) or "regression" (MAE metric)
+    task: str                 # "multilabel" | "regression" | "binary" | "multiclass"
+    task_level: str = "graph"  # "graph" (pool + head) | "node" (per-node head, no pool)
+    feat_dim: int = 0          # width of float node features batch.x (social); 0 = categorical x
 
 
 # --------------------------------------------------------------------------- LRGB
@@ -176,7 +178,12 @@ def _synthetic_split(split: str, pe_dim: int, seed: int = 0) -> GraphListDataset
 
 
 def load_dataset(cfg: DataConfig) -> tuple[Dataset, Dataset, Dataset, DataInfo]:
-    """Return (train, val, test, info) for `cfg.name`."""
+    """Return (train, val, test, info) for `cfg.name`.
+
+    Social-graph names (`gnn_mech.social.SOCIAL_DATASETS`) are dispatched to
+    `gnn_mech.social.dataset.load_social(cfg)`, imported lazily so the Peptides and
+    synthetic paths work without that subpackage.
+    """
     key = cfg.name.lower()
     if key == "synthetic-tiny":
         tr, va, te = (_synthetic_split(s, cfg.pe_dim) for s in SPLITS)
@@ -187,7 +194,21 @@ def load_dataset(cfg: DataConfig) -> tuple[Dataset, Dataset, Dataset, DataInfo]:
         tr, va, te = (PeptidesDataset(cfg.root, cfg.name, s, cfg.pe_dim) for s in SPLITS)
         info = DataInfo(list(OGB_ATOM_VOCAB), list(OGB_BOND_VOCAB), out_dim, cfg.pe_dim, task)
         return tr, va, te, info
-    raise ValueError(f"unknown dataset {cfg.name!r}; expected Peptides-func, Peptides-struct or synthetic-tiny")
+    social = _social_names()
+    if key in social:
+        from .social.dataset import load_social
+        return load_social(cfg)
+    raise ValueError(f"unknown dataset {cfg.name!r}; expected Peptides-func, Peptides-struct, synthetic-tiny "
+                     f"or a social dataset {sorted(social)}")
+
+
+def _social_names() -> set[str]:
+    """Lower-cased names in `gnn_mech.social.SOCIAL_DATASETS`; empty if the subpackage is unavailable."""
+    try:
+        from .social import SOCIAL_DATASETS
+    except ImportError:
+        return set()
+    return {str(n).lower() for n in SOCIAL_DATASETS}
 
 
 STAT_KEYS = ("n_nodes", "n_edges", "avg_resistance", "diameter", "lcc_size")

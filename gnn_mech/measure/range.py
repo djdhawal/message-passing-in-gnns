@@ -197,10 +197,14 @@ def measure_graph_range(model, dataset, cfg: MeasureConfig, device, method: str 
     Rows: {"graph_id", "u", "n_nodes", "lcc_size", "range_hops", "range_res",
     "total_hessian"}; ranges are None when the source's Hessian row is all zero.
     Graphs are drawn with their own seed stream (cfg.seed + 1), independent of the
-    Jacobian sample. Returns [] when disabled or when the model has no
-    `forward_from_h0` (node-level stand-ins).
+    Jacobian sample. Returns [] when disabled, when the model has no
+    `forward_from_h0` (node-level stand-ins), or for node-level models
+    (`model.task_level == "node"`: there is no graph output to take the Hessian of).
     """
     if cfg.n_graphs_range <= 0 or cfg.sources_per_graph <= 0 or not hasattr(model, "forward_from_h0"):
+        return []
+    if getattr(model, "task_level", "graph") == "node":
+        warnings.warn("graph-level (Hessian) range is undefined for node-level models; skipped")
         return []
     rng = np.random.default_rng(cfg.seed + 1)
     indices = rng.choice(len(dataset), min(cfg.n_graphs_range, len(dataset)), replace=False)

@@ -5,3 +5,5 @@ data/
 runs/
 *.pt
 reports/
+.venv/
+.DS_Store

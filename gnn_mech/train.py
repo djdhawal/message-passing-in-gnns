@@ -3,6 +3,18 @@
 `train` is resumable: it saves `checkpoint.pt` (model, optimizer, scheduler,
 best state, history, RNG states) every `cfg.train.checkpoint_every` epochs and
 continues from it when called again on the same `RunDir`.
+
+Graph level (`info.task_level == "graph"`, the default): multilabel -> BCE, metric
+`ap`; regression -> L1, metric `mae`. Node level (`info.task_level == "node"`, the
+social graphs): loss and metrics only over `batch.y_mask` nodes, pooled across the
+batch (and, for metrics, across the whole split):
+
+    task         loss             selection metric   also reported
+    binary       BCE-with-logits  auroc              ap
+    multiclass   cross-entropy    acc
+    regression   MSE              r2                 mae
+
+`train.batch_size` counts graphs (subgraphs) per batch.
 """
 from __future__ import annotations
 
@@ -15,7 +27,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 from torch_geometric.loader import DataLoader
 
 from .config import Config
@@ -50,7 +62,22 @@ def warmup_cosine(epoch: int, warmup_epochs: int, epochs: int) -> float:
     return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+NODE_TASKS = ("binary", "multiclass", "regression")
+_NODE_METRIC = {"binary": "auroc", "multiclass": "acc", "regression": "r2"}
+HIGHER_IS_BETTER = {"ap": True, "auroc": True, "acc": True, "r2": True, "mae": False}
+
+
+def task_level(info: Any) -> str:
+    """info.task_level, defaulting to "graph" for DataInfo-like objects without it."""
+    return getattr(info, "task_level", "graph")
+
+
 def _metric_name(info: Any) -> str:
+    """Model-selection metric: graph level "ap" | "mae"; node level "auroc" | "acc" | "r2"."""
+    if task_level(info) == "node":
+        if info.task not in _NODE_METRIC:
+            raise ValueError(f"node-level task must be one of {NODE_TASKS}, got {info.task!r}")
+        return _NODE_METRIC[info.task]
     return "ap" if info.task == "multilabel" else "mae"
 
 
@@ -59,6 +86,56 @@ def _loss(out: torch.Tensor, y: torch.Tensor, task: str) -> torch.Tensor:
     if task == "multilabel":
         return F.binary_cross_entropy_with_logits(out, y)
     return F.l1_loss(out, y)
+
+
+def _node_mask(batch) -> torch.Tensor:
+    """Supervised nodes: batch.y_mask, or every node when the batch has no mask."""
+    m = getattr(batch, "y_mask", None)
+    if m is None:
+        return torch.ones(batch.num_nodes, dtype=torch.bool, device=batch.y.device)
+    return m.view(-1).bool()
+
+
+def _node_targets(out: torch.Tensor, y: torch.Tensor, task: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """(logits, y) of masked nodes in loss form: multiclass -> ([n, C], long [n]); else ([n], float [n])."""
+    if task == "multiclass":
+        return out, y.view(-1).long()
+    return out.reshape(out.shape[0], -1)[:, 0], y.view(-1).float()
+
+
+def _node_loss(out: torch.Tensor, y: torch.Tensor, task: str) -> torch.Tensor:
+    """Mean loss over the given (already masked) nodes."""
+    out, y = _node_targets(out, y, task)
+    if task == "binary":
+        return F.binary_cross_entropy_with_logits(out, y)
+    if task == "multiclass":
+        return F.cross_entropy(out, y)
+    if task == "regression":
+        return F.mse_loss(out, y)
+    raise ValueError(f"node-level task must be one of {NODE_TASKS}, got {task!r}")
+
+
+def node_metrics(out: torch.Tensor, y: torch.Tensor, task: str) -> dict:
+    """Metrics over masked nodes. binary: loss, auroc, ap; multiclass: loss, acc;
+    regression: loss, r2, mae. auroc / ap are nan when only one class is present,
+    r2 is nan when y is constant, and everything is nan for zero nodes."""
+    nan = float("nan")
+    if out.shape[0] == 0:
+        keys = {"binary": ("auroc", "ap"), "multiclass": ("acc",), "regression": ("r2", "mae")}[task]
+        return {"loss": nan, **{k: nan for k in keys}}
+    loss = _node_loss(out, y, task).item()
+    o, t = _node_targets(out, y, task)
+    if task == "binary":
+        t_np, s_np = t.numpy(), torch.sigmoid(o).numpy()
+        two = 0 < t_np.sum() < len(t_np)
+        return {"loss": loss, "auroc": float(roc_auc_score(t_np, s_np)) if two else nan,
+                "ap": float(average_precision_score(t_np, s_np)) if t_np.sum() > 0 else nan}
+    if task == "multiclass":
+        return {"loss": loss, "acc": (o.argmax(dim=-1) == t).float().mean().item()}
+    ss_res = (o - t).pow(2).sum().item()
+    ss_tot = (t - t.mean()).pow(2).sum().item()
+    return {"loss": loss, "r2": 1.0 - ss_res / ss_tot if ss_tot > 0 else nan,
+            "mae": (o - t).abs().mean().item()}
 
 
 def macro_ap(y_true: np.ndarray, scores: np.ndarray) -> float:
@@ -70,9 +147,18 @@ def macro_ap(y_true: np.ndarray, scores: np.ndarray) -> float:
 
 @torch.no_grad()
 def evaluate(model: nn.Module, loader: DataLoader, info: Any, device: torch.device) -> dict:
-    """{"loss", "ap"} for multilabel tasks, {"loss", "mae"} for regression."""
+    """Graph level: {"loss", "ap"} for multilabel tasks, {"loss", "mae"} for regression.
+    Node level: `node_metrics` over the y_mask nodes of the whole loader."""
     model.eval()
     outs, ys = [], []
+    if task_level(info) == "node":
+        for batch in loader:
+            batch = batch.to(device)
+            out = model(batch).float()
+            m = _node_mask(batch)
+            outs.append(out[m].cpu())
+            ys.append(batch.y.view(-1)[m].cpu())
+        return node_metrics(torch.cat(outs), torch.cat(ys), info.task)
     for batch in loader:
         batch = batch.to(device)
         out = model(batch)
@@ -86,11 +172,17 @@ def evaluate(model: nn.Module, loader: DataLoader, info: Any, device: torch.devi
 
 
 @torch.no_grad()
-def predict(model: nn.Module, dataset, batch_size: int, device: torch.device) -> dict[str, np.ndarray]:
+def predict(model: nn.Module, dataset, batch_size: int, device: torch.device,
+            level: str = "graph") -> dict[str, np.ndarray]:
     """Per-graph outputs in dataset order: {"graph_id" [G], "y" [G, out], "logits" [G, out]}.
 
-    `graph_id` falls back to the dataset index for graphs without one.
+    `graph_id` falls back to the dataset index for graphs without one. With
+    level="node": one entry per y_mask node, in dataset then node order:
+    {"graph_id" [n], "node_id" [n], "y" [n], "logits" [n, out]}; `node_id` is
+    `batch.node_id` (index in the full graph), or the local node index without it.
     """
+    if level == "node":
+        return _predict_nodes(model, dataset, batch_size, device)
     model.eval()
     gids, ys, outs = [], [], []
     offset = 0
@@ -108,21 +200,60 @@ def predict(model: nn.Module, dataset, batch_size: int, device: torch.device) ->
             "y": torch.cat(ys).numpy(), "logits": torch.cat(outs).numpy()}
 
 
+@torch.no_grad()
+def _predict_nodes(model: nn.Module, dataset, batch_size: int, device: torch.device) -> dict[str, np.ndarray]:
+    model.eval()
+    gids, nids, ys, outs = [], [], [], []
+    offset = 0
+    for batch in DataLoader(dataset, batch_size=batch_size, shuffle=False):
+        batch = batch.to(device)
+        out = model(batch).float()
+        m = _node_mask(batch)
+        b = batch.batch if getattr(batch, "batch", None) is not None else torch.zeros(
+            batch.num_nodes, dtype=torch.long, device=out.device)
+        gid = getattr(batch, "graph_id", None)
+        gid = torch.arange(offset, offset + batch.num_graphs, device=out.device) if gid is None else gid.view(-1)
+        nid = getattr(batch, "node_id", None)
+        if nid is None:
+            nid = torch.arange(batch.num_nodes, device=out.device) - batch.ptr[b] if hasattr(batch, "ptr") \
+                else torch.arange(batch.num_nodes, device=out.device)
+        gids.append(gid[b][m].cpu())
+        nids.append(nid.view(-1)[m].cpu())
+        ys.append(batch.y.view(-1)[m].cpu())
+        outs.append(out[m].cpu())
+        offset += batch.num_graphs
+    return {"graph_id": torch.cat(gids).numpy().astype(np.int64),
+            "node_id": torch.cat(nids).numpy().astype(np.int64),
+            "y": torch.cat(ys).numpy(), "logits": torch.cat(outs).numpy()}
+
+
 def _train_epoch(model: nn.Module, loader: DataLoader, opt: torch.optim.Optimizer,
                  info: Any, device: torch.device, grad_clip: float) -> float:
-    """One pass over `loader`; returns the graph-weighted mean training loss."""
+    """One pass over `loader`; returns the mean training loss, weighted by graphs
+    (graph level) or by supervised nodes (node level)."""
     model.train()
+    node = task_level(info) == "node"
     total, n = 0.0, 0
     for batch in loader:
         batch = batch.to(device)
+        if node:
+            m = _node_mask(batch)
+            count = int(m.sum())
+            if count == 0:
+                continue
         opt.zero_grad()
-        loss = _loss(model(batch), batch.y, info.task)
+        out = model(batch)
+        if node:
+            loss = _node_loss(out[m], batch.y.view(-1)[m], info.task)
+        else:
+            loss = _loss(out, batch.y, info.task)
+            count = batch.num_graphs
         loss.backward()
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         opt.step()
-        total += loss.item() * batch.num_graphs
-        n += batch.num_graphs
+        total += loss.item() * count
+        n += count
     return total / max(n, 1)
 
 
@@ -155,7 +286,7 @@ def train(cfg: Config, model: nn.Module, train_ds, val_ds, test_ds, info: Any, r
     device = resolve_device(tc.device)
     model.to(device)
     metric = _metric_name(info)
-    higher_better = metric == "ap"
+    higher_better = HIGHER_IS_BETTER[metric]
 
     gen = torch.Generator()
     gen.manual_seed(cfg.seed)

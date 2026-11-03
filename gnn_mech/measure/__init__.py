@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 import numpy as np
-from scipy.stats import linregress, pearsonr
+from scipy.stats import linregress, pearsonr, spearmanr
 
 from ..config import MeasureConfig
 from .entropy import attention_entropy, measure_entropy
@@ -65,13 +65,27 @@ def summarize_jacobian(rows: list[dict]) -> dict:
     keep = (J > 0) & (R > 0) & (size > 0)
     controlled = _ols(np.log10(J[keep]), np.column_stack([np.log10(R[keep]), np.log10(size[keep])]),
                       ["log10_resistance", "log10_n_nodes"])
-    return {
+    out = {
         "n_pairs": len(rows),
         "n_zero": int((J == 0).sum()),
         "vs_resistance": _loglog_fit(R, J),
         "vs_hops": _loglog_fit(hops, J),
         "size_controlled": controlled,
     }
+    if all("excess_res" in r for r in rows):
+        # Excess resistance can be <= 0, so no log fit: Spearman rank correlation with J.
+        X = np.array([r["excess_res"] for r in rows], dtype=float)
+        ok = np.isfinite(X) & np.isfinite(J)
+        out["vs_excess_res"] = _spearman(X[ok], J[ok])
+        out["n_res_approx"] = int(sum(not r.get("res_exact", True) for r in rows))
+    return out
+
+
+def _spearman(x: np.ndarray, y: np.ndarray) -> dict:
+    if len(x) < 3 or np.ptp(x) == 0 or np.ptp(y) == 0:
+        return {"rho": None, "p": None, "n": int(len(x))}
+    rho, p = spearmanr(x, y)
+    return {"rho": float(rho), "p": float(p), "n": int(len(x))}
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> dict:
@@ -114,7 +128,8 @@ def run_all(model, dataset, cfg: MeasureConfig, device) -> dict:
     Returns {"jacobian": rows, "entropy": rows, "range_node": rows, "range_graph": rows,
     "summary": {"jacobian", "entropy", "range_node", "range_graph"}}. Node-level range
     rows (one per Jacobian target) reuse the Jacobian sweeps; graph-level (Hessian)
-    range rows come from `cfg.n_graphs_range` x `cfg.sources_per_graph` sources.
+    range rows come from `cfg.n_graphs_range` x `cfg.sources_per_graph` sources (empty
+    when n_graphs_range = 0 and for node-level models).
     """
     jac, targets = jacobian_sweeps(model, dataset, cfg, device)
     rng_node = node_range_rows(targets)

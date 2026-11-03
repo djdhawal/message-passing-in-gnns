@@ -149,3 +149,141 @@ and are not developed further.
    partition for splits, BFS-ball within parts when a target needs a full k-shell.
 3. Whether α=1 should also be run on the full graph (Performer is linear) as a check that subgraphing does
    not cut off the global signal.
+
+## Build contract: S0–S2 (written 2026-11-02, before the parallel build)
+
+Goal of this build: **launch S2 α-sweep runs on Colab** (real targets on social subgraphs).
+Planted targets (S3) and the GFM benchmark (S5) are out of scope for this build. Consolidate code
+once runs have produced data.
+
+### Ownership (disjoint files)
+
+| Workstream | Owns | Must not edit |
+|---|---|---|
+| **A. Pipeline modules** | `gnn_mech/config.py`, `data.py` (only `DataInfo` + the dispatch in `load_dataset`), `encoders.py`, `layers.py`, `models.py`, `train.py`, `run.py`, `measure/*`, `tests/test_models.py`, `tests/test_train.py`, `tests/test_measure.py`, new `tests/test_performer.py`, `tests/test_node_level.py` | `gnn_mech/social/`, notebooks |
+| **B. Social data + subgraphs** | new `gnn_mech/social/` (`__init__.py`, `sources.py`, `subgraph.py`, `structure.py`, `dataset.py`), `configs/social/*.yaml`, `configs/sweeps/social_*.yaml`, new `tests/test_social.py` | everything in A's column |
+| **C. Notebooks** | new `notebooks/social/*.ipynb` | all `.py` and configs |
+
+### Dataset names (`data.name`)
+
+`twitch-gamers`, `twitch-de|en|es|fr|pt|ru` (musae), `reddit-body`, `higgs-follow`,
+`higgs-retweet`, `higgs-reply`, `higgs-mention`, and `social-tiny` (synthetic, CPU tests,
+no download). `ego-twitter` is reserved for later and not required in this build.
+`data.py::load_dataset` dispatches every name in `gnn_mech.social.SOCIAL_DATASETS` to
+`gnn_mech.social.dataset.load_social(cfg)`; it imports lazily.
+
+### `DataConfig` fields added (defaults leave old config hashes unchanged; listed in `_ADDED_FIELDS`)
+
+```python
+target: str = ""            # dataset-specific target name; "" = dataset default
+subgraph_size: int = 2000   # target nodes per subgraph (core, before halo)
+sampler: str = "partition"  # "partition" (METIS via pymetis, fallback: BFS-grown parts) | "bfs"
+halo_hops: int = 0          # context-only hops added around each core (y_mask False); 0 = strict
+val_frac: float = 0.15      # fraction of subgraphs (whole parts) per split; train gets the rest
+test_frac: float = 0.15
+split_seed: int = 0         # partition/split seed, fixed across model seeds
+max_subgraphs: int = 0      # 0 = all; else cap per split (quick runs), applied after splitting
+```
+
+### `ModelConfig` fields added (same rule)
+
+```python
+attn: str = "softmax"         # "softmax" (GlobalAttn) | "performer" (PerformerAttn)
+performer_features: int = 64  # random features m per head
+```
+`arch` gains `"mlp"` (no message passing, no attention: per-node MLP on h0, the no-graph baseline).
+
+### `DataInfo` (extended, positional order of the old fields unchanged)
+
+```python
+@dataclass
+class DataInfo:
+    node_vocab: list[int]        # [] for social (no categorical node columns)
+    edge_vocab: list[int]        # social: [1] (a single constant edge code, so GINE works unchanged)
+    out_dim: int                 # 1 for binary/regression, n_classes for multiclass
+    pe_dim: int
+    task: str                    # "multilabel" | "regression" | "binary" | "multiclass"
+    task_level: str = "graph"    # "graph" (pool + head) | "node" (per-node head, no pool)
+    feat_dim: int = 0            # width of float node features batch.x (social); 0 = categorical x
+```
+
+### Social subgraph `Data` objects (what `load_social` returns per split, as `torch_geometric` Datasets of `Data`)
+
+| Field | Shape / dtype | Meaning |
+|---|---|---|
+| `x` | `[N, feat_dim]` float32 | node features, standardized with **train-split** statistics |
+| `pe` | `[N, pe_dim]` float32 | RWSE on the subgraph (when `pe_dim > 0`) |
+| `edge_index` | `[2, E]` long | undirected, no self loops, local indices |
+| `edge_attr` | `[E, 1]` long zeros | constant edge code |
+| `y` | `[N]` float32 (binary, regression) or long (multiclass) | target; regression targets are transformed (log1p if skewed) and standardized with train stats |
+| `y_mask` | `[N]` bool | nodes that are supervised/evaluated (core nodes with a valid label) |
+| `node_id` | `[N]` long | index of the node in the full cached graph |
+| `graph_id` | `[1]` long | subgraph id, unique across splits |
+
+`load_social(cfg: DataConfig) -> (train_ds, val_ds, test_ds, DataInfo)` with
+`task_level="node"`, `node_vocab=[]`, `edge_vocab=[1]`. Splits contain **disjoint core node sets**.
+Raw downloads go to `<data.root>/social/<source>/raw/`, the processed full graph to
+`<data.root>/social/<source>/graph.pt`, and the split subgraphs to
+`<data.root>/social/<source>/processed/<hash of the data fields>.pt`. Each step is skipped when its
+file exists (idempotent; Colab-safe: write to a temp file and `os.replace`).
+`gnn_mech.social.sources.fetch(name, root)` downloads and parses only (used by the fetch notebook).
+
+### Training / metrics (A)
+
+- Node level: loss and metrics only over `y_mask` nodes, pooled across the batch.
+  binary → BCE-with-logits, metric `auroc` (also report `ap`); multiclass → CE, metric `acc`;
+  regression → MSE, metric `r2` (also report `mae`). Higher is better for `ap`/`auroc`/`acc`/`r2`; lower for `mae`.
+  Graph-level behaviour (Peptides) is unchanged.
+- `train.batch_size` counts **subgraphs** per batch.
+- `preds_<split>.npz` for node-level runs: `graph_id`, `node_id`, `y`, `logits` over `y_mask` nodes.
+- `metrics.json` keys stay `{best_epoch, val: {...}, test: {...}, ...}` with the new metric names.
+
+### Measurements (A)
+
+- Jacobian pair rows gain `excess_res = res - (1/deg_u + 1/deg_v)` (degrees in the subgraph).
+- Node-level range (`range_node`) works unchanged on the final node representations.
+- Entropy with Performer: `PerformerAttn` exposes the exact implicit attention rows for sampled
+  query nodes (`φ(q_i)·φ(K)ᵀ / normaliser`); `measure_entropy` uses them, at most `n_queries` per subgraph (new
+  `MeasureConfig.entropy_queries: int = 64`, added-field rule).
+- Social configs set `measure.n_graphs_range=0` (no Hessian), and keep Jacobian sampling small
+  (`n_graphs_jacobian` 20, `targets_per_graph` 8).
+
+### Performer (A)
+
+FAVOR+ positive random features (Choromanski et al. 2021), multi-head, attention restricted to each
+subgraph via scatter sums over `batch` (per graph: Σ φ(k_j) v_jᵀ and Σ φ(k_j)), O(N·m·d). Random
+features are redrawn each training step only if `self.training`, and fixed (seeded buffer) in
+eval, so Jacobians are deterministic. Pure PyTorch (double backward must work). Same `(x, batch)` signature and
+`cache` / `last_*` attributes as `GlobalAttn`, so `attention_layers()` covers both (common base class or a tuple).
+
+### Configs and sweeps (B)
+
+- `configs/social/<dataset>.yaml` for `twitch-gamers`, `reddit-body`, `twitch-de` (representative musae graph),
+  `higgs-follow`: node-level hybrid, `attn: performer`, hidden 64, layers 4, heads 4, `pe_dim: 16`,
+  batch_size 8, 100 epochs, patience 20, `measure.n_graphs_range: 0`.
+- `configs/sweeps/social_s2_<dataset>.yaml`: α ∈ {0, 0.25, 0.5, 0.75, 1} × seeds [0, 1, 2], plus `arch=mlp` and
+  `arch=gcn` baselines (3 seeds), with `est_minutes`. One sweep file per dataset, so separate Colab sessions never
+  run the same run directory.
+- `configs/social/quickstart.yaml`: twitch-gamers, `max_subgraphs` small, 20 epochs, α = 0.5, ≤ 15 min on a T4.
+
+### Default targets (B; provisional, documented in each config header)
+
+- `twitch-gamers`: `mature` (binary). Other columns are inputs (log-scaled where skewed); `numeric_id` is dropped.
+- `twitch-<lang>`: `mature` (binary); inputs are the multi-hot game features reduced to the K most frequent columns (K recorded).
+- `reddit-body`: a target chosen by `gnn_mech/reddit/target_select.py` if it runs on the real graph; otherwise a
+  documented provisional choice that is not character count. Nodes without outgoing posts get `y_mask = False`.
+- `higgs-*`: message passing on the named layer; target `active_after` = the user has any RT/MT/RE activity after
+  the cutoff (default 2012-07-04 00:00 UTC, config `data.target=active_after`); inputs = structural features
+  (degree in each layer) and **activity counts before the cutoff only**. No post-cutoff information in the inputs
+  or the graph.
+
+### Colab (C)
+
+- Every notebook: mount Drive, clone `djdhawal/message-passing-in-gnns` at `BRANCH` (default `main`), install,
+  set `DRIVE = /content/drive/MyDrive/Thesis/gnn_mech`, `DATA_ROOT = {DRIVE}/data`, `OUT_DIR = {DRIVE}/runs`.
+  Data is downloaded **inside the notebook** into Drive once and reused; the processed subgraph file is copied
+  to local `/content` disk before training for I/O speed when it exists.
+- `00_quickstart.ipynb`: one short run (`configs/social/quickstart.yaml`), print metrics.
+- `01_fetch_datasets.ipynb`: fetch and process every dataset into Drive (CPU runtime is fine).
+- `02_s2_<dataset>.ipynb` (one per dataset): its sweep file, `--dry-run` first, then the sweep; re-running resumes.
+- `03_s2_results.ipynb`: collect `metrics.json` across all S2 runs into a table and α-curve plots.

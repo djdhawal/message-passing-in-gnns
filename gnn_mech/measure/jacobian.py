@@ -11,13 +11,22 @@ range measure (`measure/range.py`) costs no extra backward passes.
 from __future__ import annotations
 
 import warnings
+from typing import Optional
 
 import numpy as np
 import torch
 from torch_geometric.data import Batch
 
 from ..config import MeasureConfig
-from .resistance import effective_resistance_matrix, hop_distance_matrix, lcc_nodes
+from .resistance import (approx_resistance_rows, effective_resistance_matrix, excess_resistance,
+                         hop_distance_matrix, lcc_nodes, node_degrees)
+
+# LCCs up to this size get the exact dense resistance matrix (O(n^3) time, a few n^2
+# float64 buffers: about 1 s and 0.2 GB at n = 2,000, about 15 s and 1.5 GB at 5,000).
+# Larger LCCs use the random-projection estimate for the swept targets' rows only
+# (rows flagged res_exact = False; excess_res is then unreliable on dense graphs).
+EXACT_RESISTANCE_MAX_NODES = 5000
+APPROX_RESISTANCE_K = 256
 
 # Upper bound on elements in one batched cotangent tensor ([rows, N, D]). On CPU
 # the backward is compute-bound and small chunks are fastest (about one target
@@ -139,23 +148,31 @@ def sample_stratified_pairs(R: np.ndarray, n_pairs: int, rng: np.random.Generato
     return [(int(ju[k]), int(iu[k])) if f else (int(iu[k]), int(ju[k])) for k, f in zip(chosen, flip)]
 
 
+def _stratified_sources(r_v: np.ndarray, v: int, n_sources: int, rng: np.random.Generator) -> np.ndarray:
+    """Sources u != v spread across the quantiles of r_v[u] = R(u, v)."""
+    others = np.delete(np.arange(r_v.shape[0]), v)
+    if len(others) <= n_sources:
+        return others
+    order = others[np.argsort(r_v[others], kind="stable")]
+    return np.array([rng.choice(s) for s in np.array_split(order, n_sources)])
+
+
 def sample_target_pairs(R: np.ndarray, n_targets: int, n_sources: int,
-                        rng: np.random.Generator) -> list[tuple[int, int]]:
+                        rng: np.random.Generator, candidates: Optional[np.ndarray] = None) -> list[tuple[int, int]]:
     """Pairs (u, v) sharing a few targets v, sources spread across R(., v) quantiles.
 
     One Jacobian sweep of a target gives its sensitivity to every source, so
     reusing targets yields n_targets * n_sources pairs for n_targets sweeps.
+    `candidates` (indices into R) restricts the targets, e.g. to supervised nodes.
     """
     n = R.shape[0]
-    targets = rng.choice(n, min(n_targets, n), replace=False)
+    if candidates is None:
+        targets = rng.choice(n, min(n_targets, n), replace=False)
+    else:
+        targets = rng.choice(candidates, min(n_targets, len(candidates)), replace=False)
     pairs: list[tuple[int, int]] = []
     for v in targets:
-        others = np.array([u for u in range(n) if u != v])
-        if len(others) <= n_sources:
-            chosen = others
-        else:
-            order = others[np.argsort(R[others, v], kind="stable")]
-            chosen = np.array([rng.choice(s) for s in np.array_split(order, n_sources)])
+        chosen = _stratified_sources(R[:, v], int(v), n_sources, rng)
         pairs.extend((int(u), int(v)) for u in chosen)
     return pairs
 
@@ -167,16 +184,54 @@ def _graph_id(data, fallback: int) -> int:
     return int(gid.reshape(-1)[0]) if torch.is_tensor(gid) else int(gid)
 
 
+def _target_candidates(data, lcc: np.ndarray) -> Optional[np.ndarray]:
+    """Positions into `lcc` of supervised nodes (data.y_mask), or None when every node qualifies."""
+    mask = getattr(data, "y_mask", None)
+    if mask is None:
+        return None
+    m = mask.detach().cpu().numpy().reshape(-1).astype(bool)[lcc]
+    if m.all():
+        return None
+    return np.flatnonzero(m)
+
+
+def _sample_local_pairs(ei, n: int, lcc: np.ndarray, cfg: MeasureConfig, rng: np.random.Generator,
+                        candidates: Optional[np.ndarray]):
+    """(local pairs into lcc, resistance-row lookup {b: R(., b)}, exact?) for one graph."""
+    if len(lcc) <= EXACT_RESISTANCE_MAX_NODES:
+        R = effective_resistance_matrix(ei, n, nodes=lcc)
+        if cfg.targets_per_graph > 0:
+            local = sample_target_pairs(R, cfg.targets_per_graph, cfg.pairs_per_graph, rng, candidates)
+        else:
+            local = sample_stratified_pairs(R, cfg.pairs_per_graph, rng)
+        return local, {b: R[b] for b in sorted({b for _, b in local})}, True
+    # Large LCC: no dense n x n matrices. Targets first, then their approximate R rows.
+    # With targets_per_graph = 0, pairs_per_graph targets get one stratified source each.
+    pool = np.arange(len(lcc)) if candidates is None else candidates
+    n_t, n_s = (cfg.targets_per_graph, cfg.pairs_per_graph) if cfg.targets_per_graph > 0 \
+        else (cfg.pairs_per_graph, 1)
+    tgts = np.sort(rng.choice(pool, min(n_t, len(pool)), replace=False))
+    warnings.warn(f"LCC of {len(lcc)} nodes > {EXACT_RESISTANCE_MAX_NODES}: approximate resistance "
+                  f"(random projection, k={APPROX_RESISTANCE_K}) for {len(tgts)} targets")
+    rows = approx_resistance_rows(ei, n, lcc, tgts, k=APPROX_RESISTANCE_K, rng=rng)
+    r_of = {int(b): rows[i] for i, b in enumerate(tgts)}
+    local = [(int(u), int(b)) for b in tgts for u in _stratified_sources(r_of[int(b)], int(b), n_s, rng)]
+    return local, r_of, False
+
+
 def jacobian_sweeps(model, dataset, cfg: MeasureConfig, device, method: str = "auto",
                     min_lcc: int = 4) -> tuple[list[dict], list[dict]]:
     """Pair rows of `measure_jacobians` plus the full per-target sensitivity vectors.
 
     Returns (rows, targets). `targets` has one record per swept target v:
-    {"graph_id", "v", "n_nodes", "lcc_size", "fro", "l1", "hops", "resistance"}, where
-    the last four are arrays over the LCC nodes (in sorted node-id order; v itself is
-    included with distance 0). They feed the node-level range measure (`measure/range.py`)
-    at no extra backward passes. With targets_per_graph = 0 the targets are the `v`s of
-    the independent pairs.
+    {"graph_id", "v", "n_nodes", "lcc_size", "fro", "l1", "hops", "resistance",
+    "excess_res"}, where the last five are arrays over the LCC nodes (in sorted node-id
+    order; v itself is included with distance 0). They feed the node-level range measure
+    (`measure/range.py`) at no extra backward passes. With targets_per_graph = 0 the
+    targets are the `v`s of the independent pairs.
+
+    Node-level graphs with a `y_mask` sweep only supervised targets (targets_per_graph > 0);
+    sources range over the whole LCC. Hop distances are computed for the target rows only.
     """
     rng = np.random.default_rng(cfg.seed)
     n_graphs = min(cfg.n_graphs_jacobian, len(dataset))
@@ -190,25 +245,30 @@ def jacobian_sweeps(model, dataset, cfg: MeasureConfig, device, method: str = "a
         lcc = np.asarray(lcc_nodes(ei, n))
         if len(lcc) < min_lcc:
             continue
-        R = effective_resistance_matrix(ei, n, nodes=lcc)
-        hops = hop_distance_matrix(ei, n, nodes=lcc)
-        if cfg.targets_per_graph > 0:
-            local = sample_target_pairs(R, cfg.targets_per_graph, cfg.pairs_per_graph, rng)
-        else:
-            local = sample_stratified_pairs(R, cfg.pairs_per_graph, rng)
+        candidates = _target_candidates(data, lcc)
+        if candidates is not None and len(candidates) == 0:
+            continue
+        local, r_of, exact = _sample_local_pairs(ei, n, lcc, cfg, rng, candidates)
+        tloc = sorted(r_of)
+        hop_rows = hop_distance_matrix(ei, n, nodes=lcc, sources=np.array(tloc, dtype=np.int64))
+        hop_of = {b: hop_rows[i] for i, b in enumerate(tloc)}
+        deg = node_degrees(ei, n)[lcc]
         pairs = [(int(lcc[a]), int(lcc[b])) for a, b in local]
         infl = target_influence(model, data, [v for _, v in pairs], device, method=method)
         gid = _graph_id(data, gi)
         for (a, b), (u, v) in zip(local, pairs):
-            rows.append({"graph_id": gid, "u": u, "v": v, "resistance": float(R[a, b]),
-                         "hops": int(hops[a, b]), "n_nodes": n, "lcc_size": int(len(lcc)),
-                         "jacobian": float(infl[v][0][u])})
+            r = float(r_of[b][a])
+            rows.append({"graph_id": gid, "u": u, "v": v, "resistance": r,
+                         "excess_res": float(excess_resistance(r, deg[a], deg[b])),
+                         "res_exact": exact, "hops": int(hop_of[b][a]), "n_nodes": n,
+                         "lcc_size": int(len(lcc)), "jacobian": float(infl[v][0][u])})
         local_of = {int(lcc[b]): b for _, b in local}
         for v in sorted(infl):
             b = local_of[v]
             fro, l1 = infl[v]
             targets.append({"graph_id": gid, "v": v, "n_nodes": n, "lcc_size": int(len(lcc)),
-                            "fro": fro[lcc], "l1": l1[lcc], "hops": hops[b], "resistance": R[b]})
+                            "fro": fro[lcc], "l1": l1[lcc], "hops": hop_of[b], "resistance": r_of[b],
+                            "excess_res": excess_resistance(r_of[b], deg, deg[b])})
     return rows, targets
 
 
@@ -218,7 +278,10 @@ def measure_jacobians(model, dataset, cfg: MeasureConfig, device, method: str = 
 
     See MeasureConfig for how targets_per_graph / pairs_per_graph choose pairs.
 
-    Rows: {"graph_id", "u", "v", "resistance", "hops", "n_nodes", "lcc_size", "jacobian"}.
-    `u`, `v` are node ids in the full graph; `n_nodes` is the full graph size.
+    Rows: {"graph_id", "u", "v", "resistance", "excess_res", "res_exact", "hops", "n_nodes",
+    "lcc_size", "jacobian"}. `u`, `v` are node ids in the full graph; `n_nodes` is the full
+    graph size. excess_res = resistance - (1/deg_u + 1/deg_v), degrees in the graph `data`
+    (the subgraph, for social datasets); res_exact is False for LCCs above
+    EXACT_RESISTANCE_MAX_NODES (approximate resistance).
     """
     return jacobian_sweeps(model, dataset, cfg, device, method=method, min_lcc=min_lcc)[0]

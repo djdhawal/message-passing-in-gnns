@@ -6,7 +6,8 @@ Runs resume from `checkpoint.pt` automatically; a run with `metrics.json` is
 skipped unless `--force` (training only; missing measurements and prediction files
 are still produced). After training, the best-val model's per-graph outputs are
 written to `preds_val.npz` / `preds_test.npz` (graph_id, y, logits) for stratified
-metrics and bootstrap CIs without retraining.
+metrics and bootstrap CIs without retraining. Node-level datasets (social graphs)
+write one entry per supervised (y_mask) node: graph_id, node_id, y, logits.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import numpy as np
 
 from .config import Config, load_config
 from .results import RunDir
-from .train import predict, resolve_device, set_seed, train
+from .train import predict, resolve_device, set_seed, task_level, train
 
 PRED_SPLITS = ("val", "test")
 _RUN_FILES = ("checkpoint.pt", "metrics.json", "history.json", "best.pt", "measurements.json",
@@ -63,7 +64,8 @@ def run(cfg: Config, force: bool = False, measure: bool = True) -> dict:
 
     splits = {"train": train_ds, "val": val_ds, "test": test_ds}
     for split in PRED_SPLITS:
-        _save_preds(run_dir, split, predict(model, splits[split], cfg.train.batch_size, device))
+        _save_preds(run_dir, split, predict(model, splits[split], cfg.train.batch_size, device,
+                                            level=task_level(info)))
 
     if do_measure and not run_dir.file("measurements.json").exists():
         from .measure import run_all

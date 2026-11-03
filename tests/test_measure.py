@@ -554,3 +554,51 @@ def test_hessian_channel_sampling():
     rows = measure_graph_range(model, [data], MeasureConfig(n_graphs_range=1, sources_per_graph=3,
                                                            hessian_channels=3), CPU)
     assert all(r["range_hops"] == pytest.approx(2.0) for r in rows)
+
+
+# ---------------------------------------------------------------- excess resistance / large graphs
+
+def _random_graph(n: int, extra: int, seed: int) -> Data:
+    g = torch.Generator().manual_seed(seed)
+    src = [int(torch.randint(0, i, (1,), generator=g)) for i in range(1, n)]
+    e = torch.tensor([src, list(range(1, n))])
+    e = torch.cat([e, torch.randint(0, n, (2, extra), generator=g)], dim=1)
+    e = e[:, e[0] != e[1]]
+    return Data(x=torch.randint(0, 4, (n, 1), generator=g), edge_index=torch.cat([e, e.flip(0)], 1),
+                graph_id=torch.tensor([0]), num_nodes=n)
+
+
+def test_jacobian_rows_excess_resistance():
+    from gnn_mech.measure.resistance import node_degrees
+    data = _random_graph(30, 20, 0)
+    cfg = MeasureConfig(n_graphs_jacobian=1, targets_per_graph=3, pairs_per_graph=5)
+    rows = measure_jacobians(PropModel(k=2), [data], cfg, CPU)
+    deg = node_degrees(data.edge_index, 30)
+    for r in rows:
+        assert r["res_exact"] is True
+        assert r["excess_res"] == pytest.approx(r["resistance"] - 1 / deg[r["u"]] - 1 / deg[r["v"]])
+    assert "vs_excess_res" in summarize_jacobian(rows)
+
+
+def test_approx_resistance_rows_close_to_exact():
+    from gnn_mech.measure.resistance import approx_resistance_rows, effective_resistance_matrix, lcc_nodes
+    data = _random_graph(120, 150, 1)
+    lcc = lcc_nodes(data.edge_index, 120)
+    R = effective_resistance_matrix(data.edge_index, 120, nodes=lcc)
+    src = np.array([0, 7, 50])
+    A = approx_resistance_rows(data.edge_index, 120, lcc, src, k=2048, rng=np.random.default_rng(0))
+    rel = np.abs(A - R[src]) / np.maximum(R[src], 1e-12)
+    rel[np.arange(3), src] = 0
+    assert np.median(rel) < 0.05 and rel.max() < 0.3
+
+
+def test_large_lcc_path_uses_target_rows(monkeypatch):
+    import gnn_mech.measure.jacobian as jac_mod
+    monkeypatch.setattr(jac_mod, "EXACT_RESISTANCE_MAX_NODES", 10)
+    data = _random_graph(40, 30, 2)
+    data.y_mask = torch.arange(40) < 20
+    cfg = MeasureConfig(n_graphs_jacobian=1, targets_per_graph=3, pairs_per_graph=4)
+    with pytest.warns(UserWarning, match="approximate resistance"):
+        rows, targets = jac_mod.jacobian_sweeps(PropModel(k=2), [data], cfg, CPU)
+    assert len(rows) == 12 and all(not r["res_exact"] and r["v"] < 20 for r in rows)
+    assert all(t["resistance"].shape == (40,) and t["hops"].shape == (40,) for t in targets)

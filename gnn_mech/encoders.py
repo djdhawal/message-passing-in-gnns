@@ -2,6 +2,8 @@
 
     CategoricalEncoder(vocab, dim)  sum of one nn.Embedding per categorical column
     InputEncoder(info, hidden)      h0 = CategoricalEncoder(x) + Linear(pe)   -> [N, hidden]
+                                    (float features, info.node_vocab == [] and info.feat_dim > 0:
+                                     h0 = Linear(x) + Linear(pe))
     EdgeEncoder(info, hidden)       CategoricalEncoder over edge_attr         -> [E, hidden]
 
 Models embed edges with `EdgeEncoder(info, hidden)(batch.edge_attr)`, or build a
@@ -39,18 +41,32 @@ class CategoricalEncoder(nn.Module):
 
 
 class InputEncoder(nn.Module):
-    """Node codes (+ RWSE when info.pe_dim > 0) -> h0 [N, hidden]."""
+    """Node codes or float features (+ RWSE when info.pe_dim > 0) -> h0 [N, hidden].
+
+    Categorical `x` (info.node_vocab non-empty) goes through a `CategoricalEncoder`;
+    float `x` (node_vocab == [] and feat_dim > 0, the social graphs) through
+    `Linear(feat_dim, hidden)`. With neither, h0 is the RWSE projection alone.
+    """
 
     def __init__(self, info: DataInfo, hidden: int):
         super().__init__()
-        self.node = CategoricalEncoder(info.node_vocab, hidden)
+        feat_dim = int(getattr(info, "feat_dim", 0) or 0)
+        self.node = CategoricalEncoder(info.node_vocab, hidden) if len(info.node_vocab) > 0 else None
+        self.feat = nn.Linear(feat_dim, hidden) if self.node is None and feat_dim > 0 else None
         self.pe_dim = info.pe_dim
         self.pe = nn.Linear(info.pe_dim, hidden) if info.pe_dim > 0 else None
+        if self.node is None and self.feat is None and self.pe is None:
+            raise ValueError("InputEncoder needs categorical node columns, feat_dim > 0 or pe_dim > 0")
 
     def forward(self, batch) -> Tensor:
-        h = self.node(batch.x)
+        h = None
+        if self.node is not None:
+            h = self.node(batch.x)
+        elif self.feat is not None:
+            h = self.feat(batch.x.to(self.feat.weight.dtype))
         if self.pe is not None:
-            h = h + self.pe(batch.pe.to(h.dtype))
+            p = self.pe(batch.pe.to(self.pe.weight.dtype))
+            h = p if h is None else h + p
         return h
 
 
